@@ -46,10 +46,14 @@ class MaterialForecaster:
         """
         df_prepared = self._prepare_features(df_consumo)
         
+        # Identificar colunas para remover (não numéricas que não serão encoded)
+        cols_to_drop = ['Data', 'Quantidade_Consumida', 'Categoria', 'Subcategoria']
+        existing_cols_to_drop = [c for c in cols_to_drop if c in df_prepared.columns]
+        
         # One-Hot Encoding para variáveis categóricas (Setor e Material)
         df_ml = pd.get_dummies(df_prepared, columns=['Setor', 'Material'])
         
-        X = df_ml.drop(['Data', 'Quantidade_Consumida'], axis=1)
+        X = df_ml.drop(existing_cols_to_drop, axis=1)
         y = df_ml['Quantidade_Consumida']
         
         self.train_columns = X.columns

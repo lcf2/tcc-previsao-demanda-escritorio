@@ -10,53 +10,80 @@ def generate_synthetic_data():
     np.random.seed(42)
     
     # 1. Gerar Histórico de Consumo (mínimo 24 meses)
-    # Colunas: Data, Material, Setor, Quantidade_Consumida
+    # Colunas: Data, Material, Categoria, Subcategoria, Setor, Quantidade_Consumida
     start_date = datetime(2024, 1, 1)
     dates = pd.date_range(start_date, periods=24, freq='MS')
     
     sectors = ['Administrativo', 'Financeiro', 'RH', 'TI', 'Operações']
-    materials = ['Papel A4 (Pacotes)', 'Toner de Impressora', 'Canetas e Escrita', 'Mouses e Teclados']
+    
+    # Novo Portfólio de Materiais
+    catalog = {
+        'Papelaria e Organização de Mesa': {
+            'Escrita e Marcadores': ['Canetas e Escrita'],
+            'Mesa e Documentação': ['Post-it e Clipes', 'Grampeadores e Tesouras'],
+            'Organização Física': ['Pastas e Caixas', 'Papel Sulfite'],
+            'Identificação': ['Rotulador Brother Eletrônico']
+        },
+        'Equipamentos e Suprimentos': {
+            'Impressão': ['Toners e Cartuchos'],
+            'Informática Básica': ['Mouses e Teclados'],
+            'Segurança e Manutenção': ['Fragmentadoras de Papel']
+        },
+        'Móveis Essenciais': {
+            'Postura e Conforto': ['Cadeiras Giratórias Ergonômicas'],
+            'Área de Trabalho': ['Mesas de Escritório'],
+            'Armazenamento': ['Gaveteiros e Armários']
+        }
+    }
     
     consumption_data = []
     for date in dates:
-        # Simular sazonalidade simples (maior consumo no início do ano/semestre)
         seasonality = 1 + 0.15 * np.sin(2 * np.pi * date.month / 12)
         for sector in sectors:
-            for material in materials:
-                base_lambda = {
-                    'Papel A4 (Pacotes)': 80,
-                    'Toner de Impressora': 8,
-                    'Canetas e Escrita': 30,
-                    'Mouses e Teclados': 12
-                }[material]
-                
-                sector_factor = {
-                    'Administrativo': 1.4, 
-                    'Financeiro': 1.2, 
-                    'RH': 1.1, 
-                    'TI': 0.9, 
-                    'Operações': 0.7
-                }[sector]
-                
-                # Distribuição de Poisson para simular variabilidade real
-                lambda_val = base_lambda * sector_factor * seasonality
-                quantity = np.random.poisson(lambda_val)
-                
-                consumption_data.append({
-                    'Data': date,
-                    'Material': material,
-                    'Setor': sector,
-                    'Quantidade_Consumida': quantity
-                })
+            for cat, subcats in catalog.items():
+                for subcat, materials in subcats.items():
+                    for material in materials:
+                        base_lambda = {
+                            'Canetas e Escrita': 30,
+                            'Post-it e Clipes': 20,
+                            'Grampeadores e Tesouras': 5,
+                            'Pastas e Caixas': 15,
+                            'Papel Sulfite': 50,
+                            'Rotulador Brother Eletrônico': 2,
+                            'Toners e Cartuchos': 8,
+                            'Mouses e Teclados': 12,
+                            'Fragmentadoras de Papel': 1,
+                            'Cadeiras Giratórias Ergonômicas': 3,
+                            'Mesas de Escritório': 2,
+                            'Gaveteiros e Armários': 2
+                        }.get(material, 10)
+                        
+                        sector_factor = {
+                            'Administrativo': 1.4, 
+                            'Financeiro': 1.2, 
+                            'RH': 1.1, 
+                            'TI': 0.9, 
+                            'Operações': 0.7
+                        }[sector]
+                        
+                        lambda_val = base_lambda * sector_factor * seasonality
+                        quantity = np.random.poisson(lambda_val)
+                        
+                        consumption_data.append({
+                            'Data': date,
+                            'Material': material,
+                            'Categoria': cat,
+                            'Subcategoria': subcat,
+                            'Setor': sector,
+                            'Quantidade_Consumida': quantity
+                        })
     
     df_consumo = pd.DataFrame(consumption_data)
     
     # 2. Gerar Cadastro de Colaboradores (Equipe Ativa)
-    # Colunas: Colaborador_ID, Nome, Setor, Restricao_Ergonomica
     n_colabs = 200
     colabs_data = []
     
-    # Restrições ergonômicas alinhadas ao novo escopo
     restrictions_pool = [
         "Diagnóstico de LER/DORT (Necessita de Mouse Vertical Ergonômico)",
         "Deficiência Visual/Baixa Visão (Necessita de Teclado Ampliado com Alto Contraste)",
@@ -65,7 +92,7 @@ def generate_synthetic_data():
     ]
     
     for i in range(1, n_colabs + 1):
-        is_pcd_or_restricted = np.random.random() < 0.12 # 12% de taxa de inclusão/necessidade
+        is_pcd_or_restricted = np.random.random() < 0.15 
         restricao = np.random.choice(restrictions_pool) if is_pcd_or_restricted else "Nenhuma"
         
         colabs_data.append({

@@ -21,8 +21,7 @@ if not is_running_under_streamlit:
         subprocess.run([sys.executable, "-m", "streamlit", "run", sys.argv[0]])
     except Exception as e:
         print(f"❌ Erro ao tentar iniciar o Streamlit automaticamente: {e}")
-        print("Por favor, tente executar manualmente com o comando:")
-        print(f"streamlit run {sys.argv[0]}")
+        sys.exit()
     sys.exit()
 
 import pandas as pd
@@ -71,108 +70,220 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # =================================================================
-# ORQUESTRADOR DO PIPELINE
+# PERSISTÊNCIA DAS BASES DE DADOS EM MEMÓRIA (SESSION STATE)
+# =================================================================
+# Inicializa as bases de dados apenas uma vez no início da sessão
+if 'df_consumo' not in st.session_state or 'df_colaboradores' not in st.session_state:
+    df_c_init, df_e_init = data_loader.generate_synthetic_data()
+    st.session_state.df_consumo = df_c_init
+    st.session_state.df_colaboradores = df_e_init
+
+if 'produtos' not in st.session_state:
+    st.session_state.produtos = [
+        {"Material": "Canetas e Escrita", "Categoria": "Papelaria e Organização de Mesa", "Subcategoria": "Escrita e Marcadores"},
+        {"Material": "Post-it e Clipes", "Categoria": "Papelaria e Organização de Mesa", "Subcategoria": "Mesa e Documentação"},
+        {"Material": "Grampeadores e Tesouras", "Categoria": "Papelaria e Organização de Mesa", "Subcategoria": "Mesa e Documentação"},
+        {"Material": "Pastas e Caixas", "Categoria": "Papelaria e Organização de Mesa", "Subcategoria": "Organização Física"},
+        {"Material": "Papel Sulfite", "Categoria": "Papelaria e Organização de Mesa", "Subcategoria": "Organização Física"},
+        {"Material": "Rotulador Brother Eletrônico", "Categoria": "Papelaria e Organização de Mesa", "Subcategoria": "Identificação"},
+        {"Material": "Toners e Cartuchos", "Categoria": "Equipamentos e Suprimentos", "Subcategoria": "Impressão"},
+        {"Material": "Mouses e Teclados", "Categoria": "Equipamentos e Suprimentos", "Subcategoria": "Informática Básica"},
+        {"Material": "Fragmentadoras de Papel", "Categoria": "Equipamentos e Suprimentos", "Subcategoria": "Segurança e Manutenção"},
+        {"Material": "Cadeiras Giratórias Ergonômicas", "Categoria": "Móveis Essenciais", "Subcategoria": "Postura e Conforto"},
+        {"Material": "Mesas de Escritório", "Categoria": "Móveis Essenciais", "Subcategoria": "Área de Trabalho"},
+        {"Material": "Gaveteiros e Armários", "Categoria": "Móveis Essenciais", "Subcategoria": "Armazenamento"},
+    ]
+
+# =================================================================
+# BARRA LATERAL: CENTRAL DE SIMULAÇÃO
+# =================================================================
+st.sidebar.title("🖥️ Central de Simulação")
+st.sidebar.info("Tema: ML na Previsão de Demanda de Materiais de Escritório e Indiretos Ergonômicos")
+
+# 1. Formulário para Adicionar Novo Material (Simulação Reativa)
+with st.sidebar.form("form_novo_material"):
+    st.subheader("➕ Simular Novo Material")
+    novo_mat = st.text_input("Nome do Material", placeholder="Ex: Telas de Proteção")
+    
+    # Busca setores dinamicamente da base persistente
+    setores_disp = st.session_state.df_colaboradores['Setor'].unique()
+    setor_selecionado = st.selectbox("Setor Alocado", setores_disp)
+    
+    # Consumo médio desejado para a simulação de Poisson
+    consumo_medio = st.slider("Consumo Médio Desejado (Unidades)", 10, 500, 50)
+    
+    submitted = st.form_submit_button("Gerar Histórico e Treinar IA")
+    
+    if submitted:
+        if novo_mat:
+            # Geração de 24 meses de histórico decrescente
+            historico_novo = []
+            hoje = datetime.now().replace(day=1)
+            
+            for i in range(24):
+                # Calcula a data retroativa
+                data_mes = hoje - pd.DateOffset(months=i)
+                
+                # Lógica de Poisson: Quantidade = np.random.poisson(consumo_medio)
+                quantidade = np.random.poisson(consumo_medio)
+                
+                historico_novo.append({
+                    'Data': data_mes,
+                    'Ano': data_mes.year,
+                    'Mes': data_mes.month,
+                    'Material': novo_mat,
+                    'Categoria': 'Simulação',
+                    'Subcategoria': 'Novos Itens',
+                    'Setor': setor_selecionado,
+                    'Quantidade_Consumida': quantidade
+                })
+            
+            # Concatena o novo histórico na base em memória
+            df_novo = pd.DataFrame(historico_novo)
+            st.session_state.df_consumo = pd.concat([st.session_state.df_consumo, df_novo], ignore_index=True)
+            
+            # Adiciona ao catálogo para visualização em gráficos
+            st.session_state.produtos.append({
+                "Material": novo_mat,
+                "Categoria": "Simulação",
+                "Subcategoria": "Novos Itens"
+            })
+            
+            st.sidebar.success(f"Sucesso! 24 meses de dados gerados para '{novo_mat}'.")
+            st.rerun()
+        else:
+            st.error("Por favor, preencha o nome do material.")
+
+# 2. Hiperparâmetros do Modelo (Sidebar)
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚙️ Parâmetros de Machine Learning")
+n_trees = st.sidebar.slider("Árvores (Estimators)", 50, 500, 100)
+depth = st.sidebar.slider("Profundidade Máxima", 2, 20, 10)
+
+# =================================================================
+# ORQUESTRADOR DO PIPELINE PRINCIPAL
 # =================================================================
 def main():
-    st.sidebar.title("🖥️ Configurações do TCC")
-    st.sidebar.info("Tema: ML na Previsão de Demanda de Materiais de Escritório e Indiretos Ergonômicos")
-    
-    # 1. Carregamento de Dados
-    source = st.sidebar.radio("Origem dos Dados:", ["Sintético (Padrão)", "Upload Excel/CSV"])
-    
-    if source == "Sintético (Padrão)":
-        df_consumo, df_colaboradores = data_loader.generate_synthetic_data()
-        st.sidebar.success("Dados sintéticos ativos.")
-    else:
-        file_c = st.sidebar.file_uploader("Histórico de Consumo", type=['xlsx', 'csv'])
-        file_e = st.sidebar.file_uploader("Cadastro de RH", type=['xlsx', 'csv'])
-        if file_c and file_e:
-            df_consumo, df_colaboradores = data_loader.load_from_excel(file_c, file_e)
-        else:
-            st.warning("Aguardando upload. Usando sintéticos.")
-            df_consumo, df_colaboradores = data_loader.generate_synthetic_data()
-
-    # 2. Parâmetros do Modelo
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Hiperparâmetros RF")
-    n_trees = st.sidebar.slider("Árvores (Estimators)", 50, 500, 100)
-    depth = st.sidebar.slider("Profundidade Máxima", 2, 20, 10)
-
-    # 3. Execução do ML
     try:
-        forecaster = MaterialForecaster(n_estimators=n_trees, max_depth=depth)
-        mae, X_test, y_test, y_pred = forecaster.train(df_consumo)
-        df_future = forecaster.predict_next_3_months(df_consumo)
-        df_inclusive = post_processing.apply_inclusive_rules(df_future, df_colaboradores)
+        # Consome os dados diretamente do Session State
+        df_consumo = st.session_state.df_consumo
+        df_colaboradores = st.session_state.df_colaboradores
+
+        # Função de Treinamento com Cache de Recurso para otimização
+        @st.cache_resource
+        def run_ml_pipeline(df_c, df_colabs, _n_trees, _depth):
+            forecaster = MaterialForecaster(n_estimators=_n_trees, max_depth=_depth)
+            mae, X_test, y_test, y_pred = forecaster.train(df_c)
+            df_future = forecaster.predict_next_3_months(df_c)
+            df_inclusive = post_processing.apply_inclusive_rules(df_future, df_colabs)
+            return mae, X_test, y_test, y_pred, df_future, df_inclusive
+
+        mae, X_test, y_test, y_pred, df_future, df_inclusive = run_ml_pipeline(
+            df_consumo, df_colaboradores, n_trees, depth
+        )
         
-        # TÍTULO E CARDS
-        st.title("🖥️ Previsão de Demanda: Materiais de Escritório & Ergonomia")
-        st.markdown("#### Protótipo de TCC - UNIP São José do Rio Preto")
+        # TÍTULO E CARDS DE KPI (PAINEL SUPERIOR)
+        st.title("🖥️ Supply Chain Inteligente & Ergonomia")
+        st.markdown("#### Protótipo de TCC - Central de Simulação UNIP")
         
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         total_prev = df_inclusive['Previsao_Bruta'].sum()
         total_active = len(df_colaboradores)
         pcd_rate = (len(df_colaboradores[df_colaboradores['Restricao_Ergonomica'] != "Nenhuma"]) / total_active) * 100
+        total_adaptados = df_inclusive['Quantidade_Especial'].sum() if 'Quantidade_Especial' in df_inclusive.columns else 0
         
         c1.metric("Previsão Bruta (90d)", f"{total_prev} un.")
         c2.metric("Acurácia (MAE)", f"{mae:.2f}")
         c3.metric("Colaboradores Ativos", total_active)
-        c4.metric("Taxa de Inclusão/NR-17", f"{pcd_rate:.1f}%")
+        c4.metric("Taxa de Inclusão", f"{pcd_rate:.1f}%")
+        c5.metric("Itens Adaptados", f"{total_adaptados} un.")
 
-        # ABAS
-        tab1, tab2, tab3, tab4 = st.tabs(["📈 ML & Projeções", "♿ Relatório Ergonômico", "📄 Fundamentação Teórica", "📂 Database"])
+        # ABAS DE NAVEGAÇÃO
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📈 Dashboard Preditivo", 
+            "♿ Relatório Ergonômico", 
+            "📄 Fundamentação Teórica", 
+            "�️ Central de Edição de Dados"
+        ])
 
         with tab1:
-            st.subheader("Análise Preditiva de Consumo")
+            st.subheader("Análise Preditiva de Consumo (Random Forest)")
             
-            # Gráfico de Validação (Real vs Predito no Teste)
+            # Gráfico de Validação: Real vs Predito
             fig_val = go.Figure()
             fig_val.add_trace(go.Scatter(y=y_test.values, name="Real", line=dict(color="#1e3a8a", width=2)))
             fig_val.add_trace(go.Scatter(y=y_pred, name="Previsto", line=dict(color="#38bdf8", dash='dash')))
             fig_val.update_layout(title="Validação do Modelo (Conjunto de Teste)", template="plotly_dark")
             st.plotly_chart(fig_val, use_container_width=True)
             
-            # Gráfico de Barras Projeção
-            df_grouped = df_future.groupby('Material')['Previsao_Bruta'].sum().reset_index()
-            fig_bar = px.bar(df_grouped, x='Material', y='Previsao_Bruta', color='Material', 
-                             title="Volume Previsto por Material (Próximos 3 Meses)", template="plotly_dark")
+            # Gráfico de Projeção Trimestral
+            df_portfolio = pd.DataFrame(st.session_state.produtos)
+            df_plot = df_future.merge(df_portfolio, on="Material", how="left").fillna("Simulado")
+            
+            fig_bar = px.bar(df_plot, x='Categoria', y='Previsao_Bruta', color='Subcategoria', 
+                             barmode='group', title="Projeção Trimestral por Segmento", 
+                             template="plotly_dark", hover_data=['Material'])
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with tab2:
             st.subheader("Relatório de Adequação Ergonômica (NR-17)")
-            st.info("Ajustes automáticos baseados nas necessidades de saúde ocupacional mapeadas pelo RH.")
+            st.info("Ajustes automáticos baseados nas necessidades mapeadas pelo RH.")
             st.dataframe(df_inclusive, use_container_width=True)
-            
-            # KPI de Itens Adaptados
-            total_adaptados = df_inclusive['Itens_Adaptados_Extra'].sum()
-            st.success(f"🛡️ Total de itens adaptados/ergonômicos identificados: {total_adaptados} unidades para conformidade NR-17.")
+            st.success(f"🛡️ Total de itens adaptados/ergonômicos identificados: {total_adaptados} unidades.")
 
         with tab3:
             st.subheader("Fundamentação Teórica & ESG")
             st.markdown("""
-            **Contextualização do Software:**
-            Este sistema integra a previsão de demanda (Machine Learning) com as diretrizes da **NR-17 (Ergonomia)** e pilares **ESG (Environmental, Social, and Governance)**.
+            **Capítulo 3: Desenvolvimento do Artefato Tecnológico**
             
-            **Principais Conceitos:**
-            1. **Previsão de Demanda:** Utiliza Random Forest para evitar o excesso de estoque e obsolescência de materiais administrativos.
-            2. **NR-17:** O sistema identifica proativamente colaboradores com diagnósticos de LER/DORT ou deficiências visuais, ajustando a ordem de compra para incluir mouses verticais e teclados adaptados.
-            3. **Supply Chain Inclusivo:** Garante que a acessibilidade não seja uma exceção, mas parte do fluxo automatizado de suprimentos.
+            Este sistema integra a previsão de demanda (Machine Learning) com as diretrizes da **NR-17 (Ergonomia)** e pilares **ESG**.
             
-            **Arquitetura:**
-            - **Backend:** Random Forest Regressor para séries temporais.
-            - **Filtro Inclusivo:** Algoritmo prescritivo que cruza `Material` vs `Restrição Ergonômica`.
+            1. **Otimização de Recursos:** A IA evita o excesso de estoque, reduzindo custos e impacto ambiental.
+            2. **Conformidade Legal:** O algoritmo cruza dados de RH para garantir que o material adequado (ex: Mouse Vertical) chegue ao colaborador com LER/DORT.
+            3. **Supply Chain Inclusivo:** A tecnologia como facilitadora da acessibilidade corporativa.
             """)
             st.latex(r"MAE = \frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y}_i|")
 
         with tab4:
-            st.subheader("Inspecionar Bases de Dados")
-            st.write("**Histórico de Consumo Administrativo:**")
-            st.dataframe(df_consumo.head(100), use_container_width=True)
-            st.write("**Cadastro de Colaboradores (Saúde Ocupacional):**")
-            st.dataframe(df_colaboradores, use_container_width=True)
+            st.subheader("🛠️ Central de Edição de Dados (Grid Interativa)")
+            st.warning("Abaixo você pode editar as bases diretamente no estilo Excel. Clique no botão ao final para re-treinar a IA.")
+            
+            col_ed1, col_ed2 = st.columns(2)
+            
+            with col_ed1:
+                st.write("**📝 Editar Histórico de Consumo**")
+                # Editor interativo para consumo
+                edited_consumo = st.data_editor(
+                    st.session_state.df_consumo,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="editor_consumo"
+                )
+                
+            with col_ed2:
+                st.write("**👥 Editar Cadastro de RH**")
+                # Editor interativo para colaboradores
+                edited_colaboradores = st.data_editor(
+                    st.session_state.df_colaboradores,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="editor_colaboradores"
+                )
+            
+            # Botão para consolidar alterações e forçar re-treinamento
+            if st.button("💾 Salvar Alterações e Re-treinar IA", use_container_width=True):
+                # Sobrescreve as variáveis persistentes com os dados da grade
+                st.session_state.df_consumo = edited_consumo
+                st.session_state.df_colaboradores = edited_colaboradores
+                
+                # Limpa o cache para que o pipeline de ML execute novamente com novos dados
+                st.cache_resource.clear()
+                
+                st.success("Alterações salvas! Re-treinando modelos preditivos...")
+                st.rerun()
 
     except Exception as e:
-        st.error(f"Erro no processamento: {e}")
+        st.error(f"Erro no processamento do pipeline: {e}")
         st.exception(e)
 
 if __name__ == "__main__":

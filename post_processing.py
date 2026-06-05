@@ -1,62 +1,95 @@
-import pandas as pd
-
-def apply_inclusive_rules(df_future, df_employees):
-    """
-    Camada de Pós-Processamento Inclusivo e Ergonômico.
-    Cruza as previsões brutas de ML com o cadastro de RH para identificar necessidades 
-    especiais e adequar a ordem de compra à norma NR-17.
-    """
-    report = []
+import pandas as pd 
+ 
+def apply_inclusive_rules(df_future, df_employees): 
+    """ 
+    Cruza as previsões brutas de materiais de escritório com as necessidades ergonômicas 
+    do cadastro de colaboradores (RH) por setor para gerar um plano de compras adaptado. 
     
-    for index, row in df_future.iterrows():
-        sector = row['Setor']
-        material = row['Material']
-        raw_qty = row['Previsao_Bruta']
-        date = row['Data']
+    Implementa a conformidade com a NR-17 e diretrizes de acessibilidade (ESG). 
+    """ 
+    # Cria uma cópia do dataframe de previsões futuras para não modificar o original 
+    df_output = df_future.copy() 
+    
+    # Normaliza a identificação das colunas de identificação e quantidade 
+    material_col = 'EPI' if 'EPI' in df_output.columns else 'Material' 
+    prev_col = 'Previsao_Bruta' if 'Previsao_Bruta' in df_output.columns else ('Quantidade_Prevista' if 'Quantidade_Prevista' in df_output.columns else 'Previsao') 
+    
+    # Inicializa as novas colunas adaptativas padrão 
+    df_output['Previsao_Adaptada'] = df_output[prev_col] 
+    df_output['Quantidade_Especial'] = 0 
+    df_output['Item_Especial'] = "Nenhum" 
+    df_output['Observacao'] = "Nenhuma adequação ergonômica pendente para este material no setor." 
+    
+    # Processa cada previsão futura linha a linha 
+    for idx, row in df_output.iterrows(): 
+        setor = row['Setor'] 
+        material = row[material_col] 
+        qtd_bruta = row[prev_col] 
         
-        # Filtrar funcionários do setor com restrições ou necessidades especiais
-        sector_employees = df_employees[df_employees['Setor'] == sector]
-        restricted_employees = sector_employees[sector_employees['Restricao_Ergonomica'] != "Nenhuma"]
+        # Filtra os colaboradores que atuam no respectivo setor 
+        colabs_setor = df_employees[df_employees['Setor'] == setor] 
         
-        previsao_adaptada = raw_qty
-        obs = "Demanda Padrão atendida."
-        itens_adaptados = 0
+        # ============================================================================== 
+        # CRÍTICO: Inicialização segura da lista de detalhes por linha para evitar NameError! 
+        # ============================================================================== 
+        detalhes = [] 
+        pcds_ativos = 0 
+        item_adaptado = "Nenhum" 
         
-        if material == 'Mouses e Teclados':
-            # 1. Caso LER/DORT -> Mouse Vertical
-            ler_dort = len(restricted_employees[restricted_employees['Restricao_Ergonomica'].str.contains("LER/DORT")])
-            
-            # 2. Caso Baixa Visão -> Teclado Ampliado
-            baixa_visao = len(restricted_employees[restricted_employees['Restricao_Ergonomica'].str.contains("Baixa Visão")])
-            
-            # 3. Caso Canhoto -> Mouse/Teclado Adaptado
-            canhoto = len(restricted_employees[restricted_employees['Restricao_Ergonomica'].str.contains("Canhoto")])
-            
-            itens_adaptados = ler_dort + baixa_visao + canhoto
-            
-            if itens_adaptados > 0:
-                previsao_adaptada = max(0, raw_qty - itens_adaptados)
-                detalhes = []
-                if ler_dort > 0: detalhes.append(f"{ler_dort}x Mouse Vertical (LER/DORT)")
-                if baixa_visao > 0: detalhes.append(f"{baixa_visao}x Teclado Ampliado (Baixa Visão)")
-                if canhoto > 0: detalhes.append(f"{canhoto}x Kit para Canhoto")
+        # --- REGRA 1: Mouses e Teclados + LER/DORT (NR-17) --- 
+        if "mouse" in material.lower() or "teclado" in material.lower(): 
+            pcds = colabs_setor[colabs_setor['Restricao_Ergonomica'].str.contains("LER/DORT", na=False, case=False)] 
+            pcds_ativos = len(pcds) 
+            if pcds_ativos > 0: 
+                item_adaptado = "Combo Mouse Vertical + Teclado Split Ergonômico" 
+                # Subtrai o equivalente de itens comuns e converte em especiais 
+                qtd_comum_ajustada = max(0, qtd_bruta - pcds_ativos) 
+                df_output.at[idx, 'Previsao_Adaptada'] = qtd_comum_ajustada 
+                df_output.at[idx, 'Quantidade_Especial'] = pcds_ativos 
+                df_output.at[idx, 'Item_Especial'] = item_adaptado 
+                detalhes.append(f"{pcds_ativos}x {item_adaptado}") 
+        
+        # --- REGRA 2: Rotulador Brother + Baixa Visão (Inclusão Visual) --- 
+        elif "rotulador" in material.lower(): 
+            pcds = colabs_setor[colabs_setor['Restricao_Ergonomica'].str.contains("Visual|Visão", na=False, case=False)] 
+            pcds_ativos = len(pcds) 
+            if pcds_ativos > 0: 
+                item_adaptado = "Rotulador com Teclas de Auto-Relevo/Braille" 
+                qtd_comum_ajustada = max(0, qtd_bruta - pcds_ativos) 
+                df_output.at[idx, 'Previsao_Adaptada'] = qtd_comum_ajustada 
+                df_output.at[idx, 'Quantidade_Especial'] = pcds_ativos 
+                df_output.at[idx, 'Item_Especial'] = item_adaptado 
+                detalhes.append(f"{pcds_ativos}x {item_adaptado}") 
                 
-                obs = f"Adequação NR-17: {', '.join(detalhes)}. Redução no lote comum para evitar ociosidade."
+        # --- REGRA 3: Cadeiras Giratórias + Suporte Postura (NR-17) --- 
+        elif "cadeira" in material.lower(): 
+            pcds = colabs_setor[colabs_setor['Restricao_Ergonomica'].str.contains("Postura|NR-17", na=False, case=False)] 
+            pcds_ativos = len(pcds) 
+            if pcds_ativos > 0: 
+                item_adaptado = "Cadeiras Ergonômicas Ajustáveis Premium (NR-17)" 
+                qtd_comum_ajustada = max(0, qtd_bruta - pcds_ativos) 
+                df_output.at[idx, 'Previsao_Adaptada'] = qtd_comum_ajustada 
+                df_output.at[idx, 'Quantidade_Especial'] = pcds_ativos 
+                df_output.at[idx, 'Item_Especial'] = item_adaptado 
+                detalhes.append(f"{pcds_ativos}x {item_adaptado}") 
+                
+        # --- REGRA 4: Canetas e Escrita + Colaborador Canhoto (Biotipos) --- 
+        elif "caneta" in material.lower() or "escrita" in material.lower(): 
+            pcds = colabs_setor[colabs_setor['Restricao_Ergonomica'].str.contains("Canhoto", na=False, case=False)] 
+            pcds_ativos = len(pcds) 
+            if pcds_ativos > 0: 
+                item_adaptado = "Canetas Ergonômicas Canhotas" 
+                qtd_comum_ajustada = max(0, qtd_bruta - pcds_ativos) 
+                df_output.at[idx, 'Previsao_Adaptada'] = qtd_comum_ajustada 
+                df_output.at[idx, 'Quantidade_Especial'] = pcds_ativos 
+                df_output.at[idx, 'Item_Especial'] = item_adaptado 
+                detalhes.append(f"{pcds_ativos}x {item_adaptado}") 
         
-        elif material == 'Canetas e Escrita':
-            # Exemplo de regra para suporte de punho se houver restrição de postura
-            postura = len(restricted_employees[restricted_employees['Restricao_Ergonomica'].str.contains("NR-17")])
-            if postura > 0:
-                obs = f"Inclusão: Necessário {postura}x Suporte Ortopédico de Punho para este setor (Ergonomia)."
-
-        report.append({
-            'Data': date,
-            'Setor': sector,
-            'Material': material,
-            'Previsao_Bruta': raw_qty,
-            'Previsao_Comum_Ajustada': int(previsao_adaptada),
-            'Itens_Adaptados_Extra': itens_adaptados,
-            'Observacao': obs
-        })
-        
-    return pd.DataFrame(report)
+        # Se alguma adaptação foi registrada para esta linha, consolida na observação 
+        if detalhes: 
+            df_output.at[idx, 'Observacao'] = ( 
+                f"Ajuste NR-17/Inclusão: Encomendar " + " e ".join(detalhes) + 
+                " sob medida e reduzir lote comum." 
+            ) 
+            
+    return df_output 
