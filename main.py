@@ -33,15 +33,15 @@ from datetime import datetime
 
 # Importação dos módulos internos refinados
 import data_loader
-from forecaster import EPIForecaster
+from forecaster import MaterialForecaster
 import post_processing
 
 # =================================================================
 # UI/UX: CONFIGURAÇÃO DE TEMA E ESTILO PREMIUM
 # =================================================================
 st.set_page_config(
-    page_title="Supply Chain Inclusivo - TCC UNIP",
-    page_icon="🛡️",
+    page_title="Supply Chain Ergonômico - TCC UNIP",
+    page_icon="🖥️",
     layout="wide"
 )
 
@@ -56,7 +56,7 @@ st.markdown("""
         border: 1px solid #334155;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }
-    div[data-testid="stMetricValue"] { color: #10b981; font-weight: 800; }
+    div[data-testid="stMetricValue"] { color: #38bdf8; font-weight: 800; }
     div[data-testid="stMetricLabel"] { color: #94a3b8; }
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] {
@@ -64,8 +64,8 @@ st.markdown("""
         color: #94a3b8; font-weight: 600; padding: 10px 20px;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #1e3a8a !important; color: #10b981 !important;
-        border-bottom: 3px solid #10b981 !important;
+        background-color: #1e3a8a !important; color: #38bdf8 !important;
+        border-bottom: 3px solid #38bdf8 !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -74,8 +74,8 @@ st.markdown("""
 # ORQUESTRADOR DO PIPELINE
 # =================================================================
 def main():
-    st.sidebar.title("🛡️ Configurações do TCC")
-    st.sidebar.info("Tema: ML na Previsão de Demanda em Supply Chain Inclusivo")
+    st.sidebar.title("🖥️ Configurações do TCC")
+    st.sidebar.info("Tema: ML na Previsão de Demanda de Materiais de Escritório e Indiretos Ergonômicos")
     
     # 1. Carregamento de Dados
     source = st.sidebar.radio("Origem dos Dados:", ["Sintético (Padrão)", "Upload Excel/CSV"])
@@ -100,13 +100,13 @@ def main():
 
     # 3. Execução do ML
     try:
-        forecaster = EPIForecaster(n_estimators=n_trees, max_depth=depth)
+        forecaster = MaterialForecaster(n_estimators=n_trees, max_depth=depth)
         mae, X_test, y_test, y_pred = forecaster.train(df_consumo)
         df_future = forecaster.predict_next_3_months(df_consumo)
         df_inclusive = post_processing.apply_inclusive_rules(df_future, df_colaboradores)
         
         # TÍTULO E CARDS
-        st.title("🛡️ Supply Chain Inclusivo: Previsão & Ergonomia")
+        st.title("🖥️ Previsão de Demanda: Materiais de Escritório & Ergonomia")
         st.markdown("#### Protótipo de TCC - UNIP São José do Rio Preto")
         
         c1, c2, c3, c4 = st.columns(4)
@@ -116,53 +116,59 @@ def main():
         
         c1.metric("Previsão Bruta (90d)", f"{total_prev} un.")
         c2.metric("Acurácia (MAE)", f"{mae:.2f}")
-        c3.metric("Mão de Obra Ativa", total_active)
-        c4.metric("Taxa de Inclusão PCD", f"{pcd_rate:.1f}%")
+        c3.metric("Colaboradores Ativos", total_active)
+        c4.metric("Taxa de Inclusão/NR-17", f"{pcd_rate:.1f}%")
 
         # ABAS
-        tab1, tab2, tab3, tab4 = st.tabs(["📈 ML & Projeções", "♿ Relatório Inclusivo", "📄 Memorial TCC", "📂 Database"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📈 ML & Projeções", "♿ Relatório Ergonômico", "📄 Fundamentação Teórica", "📂 Database"])
 
         with tab1:
-            st.subheader("Validação Temporal e Projeção Futura")
+            st.subheader("Análise Preditiva de Consumo")
             
             # Gráfico de Validação (Real vs Predito no Teste)
             fig_val = go.Figure()
             fig_val.add_trace(go.Scatter(y=y_test.values, name="Real", line=dict(color="#1e3a8a", width=2)))
-            fig_val.add_trace(go.Scatter(y=y_pred, name="Previsto", line=dict(color="#10b981", dash='dash')))
+            fig_val.add_trace(go.Scatter(y=y_pred, name="Previsto", line=dict(color="#38bdf8", dash='dash')))
             fig_val.update_layout(title="Validação do Modelo (Conjunto de Teste)", template="plotly_dark")
             st.plotly_chart(fig_val, use_container_width=True)
             
             # Gráfico de Barras Projeção
-            df_grouped = df_future.groupby('EPI')['Previsao_Bruta'].sum().reset_index()
-            fig_bar = px.bar(df_grouped, x='EPI', y='Previsao_Bruta', color='EPI', 
-                             title="Volume Previsto por EPI (Próximos 3 Meses)", template="plotly_dark")
+            df_grouped = df_future.groupby('Material')['Previsao_Bruta'].sum().reset_index()
+            fig_bar = px.bar(df_grouped, x='Material', y='Previsao_Bruta', color='Material', 
+                             title="Volume Previsto por Material (Próximos 3 Meses)", template="plotly_dark")
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with tab2:
-            st.subheader("Relatório Prescritivo de Ergonomia")
-            st.info("Ajustes realizados cruzando as necessidades do RH com a demanda de ML.")
+            st.subheader("Relatório de Adequação Ergonômica (NR-17)")
+            st.info("Ajustes automáticos baseados nas necessidades de saúde ocupacional mapeadas pelo RH.")
             st.dataframe(df_inclusive, use_container_width=True)
             
-            # KPI de Economia
-            economia = df_inclusive['Descarte_Evitado_Un'].sum()
-            st.success(f"🌱 Potencial de Redução de Descarte: {economia} peças avulsas otimizadas via fracionamento inclusivo.")
+            # KPI de Itens Adaptados
+            total_adaptados = df_inclusive['Itens_Adaptados_Extra'].sum()
+            st.success(f"🛡️ Total de itens adaptados/ergonômicos identificados: {total_adaptados} unidades para conformidade NR-17.")
 
         with tab3:
-            st.subheader("Memorial de Validação e Arquitetura")
-            st.latex(r"MAE = \frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y}_i|")
+            st.subheader("Fundamentação Teórica & ESG")
             st.markdown("""
-            **Arquitetura do Sistema:**
-            1. **Ingestão:** Dados sintéticos via Poisson/Sazonalidade.
-            2. **Feature Engineering:** Criação de Lags temporais (t-1, t-2) e componentes de data.
-            3. **Modelo:** Ensemble Random Forest Regressor (Scikit-Learn).
-            4. **Pós-Processamento:** Filtro de acessibilidade baseado no cadastro Ergonômico do RH.
+            **Contextualização do Software:**
+            Este sistema integra a previsão de demanda (Machine Learning) com as diretrizes da **NR-17 (Ergonomia)** e pilares **ESG (Environmental, Social, and Governance)**.
+            
+            **Principais Conceitos:**
+            1. **Previsão de Demanda:** Utiliza Random Forest para evitar o excesso de estoque e obsolescência de materiais administrativos.
+            2. **NR-17:** O sistema identifica proativamente colaboradores com diagnósticos de LER/DORT ou deficiências visuais, ajustando a ordem de compra para incluir mouses verticais e teclados adaptados.
+            3. **Supply Chain Inclusivo:** Garante que a acessibilidade não seja uma exceção, mas parte do fluxo automatizado de suprimentos.
+            
+            **Arquitetura:**
+            - **Backend:** Random Forest Regressor para séries temporais.
+            - **Filtro Inclusivo:** Algoritmo prescritivo que cruza `Material` vs `Restrição Ergonômica`.
             """)
+            st.latex(r"MAE = \frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y}_i|")
 
         with tab4:
             st.subheader("Inspecionar Bases de Dados")
-            st.write("**Consumo Histórico:**")
+            st.write("**Histórico de Consumo Administrativo:**")
             st.dataframe(df_consumo.head(100), use_container_width=True)
-            st.write("**Cadastro de RH:**")
+            st.write("**Cadastro de Colaboradores (Saúde Ocupacional):**")
             st.dataframe(df_colaboradores, use_container_width=True)
 
     except Exception as e:
