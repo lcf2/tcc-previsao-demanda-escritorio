@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supply Chain Inclusivo - Benchmark C# (.NET 8 + ML.NET) | TCC UNIP</title>
+    <!-- Bootstrap 5 + Chart.js (vendorizados em /lib) -->
+    <link href="/lib/bootstrap.min.css" rel="stylesheet">
+    <script src="/lib/chart.umd.min.js"></script>
+    <style>
+        :root { --bs-primary: #10b981; --bs-primary-rgb: 16,185,129; }
+        body { background:#0f172a; color:#f8fafc; font-family:'Segoe UI', sans-serif; }
+        .card-metric {
+            background: linear-gradient(145deg,#1e293b,#0f172a);
+            border:1px solid #334155; border-radius:14px;
+            box-shadow: 0 8px 24px rgba(0,0,0,.35);
+        }
+        .metric-value { font-size:2rem; font-weight:800; color:#10b981; }
+        .metric-label { font-size:.85rem; color:#94a3b8; text-transform:uppercase; letter-spacing:.4px; }
+        .sidebar {
+            background:#1e293b; border-right:1px solid #334155;
+            min-height:100vh; padding:20px 14px;
+            position:sticky; top:0;
+        }
+        .nav-tabs .nav-link { color:#94a3b8; border-radius:8px 8px 0 0; }
+        .nav-tabs .nav-link.active { background:#334155!important; color:#10b981!important; border-bottom:3px solid #10b981; }
+        .badge-pill { border-radius:999px; padding:6px 12px; font-weight:600; }
+        .table-dark { --bs-table-bg:#1e293b; --bs-table-border-color:#334155; }
+        .logo-unip { filter:brightness(1.2) invert(0); }
+        .range-slider::-webkit-slider-thumb { background:#10b981; }
+    </style>
+</head>
+<body>
+
+<div class="container-fluid">
+    <div class="row g-0">
+        <!-- ===================== SIDEBAR ===================== -->
+        <aside class="col-lg-3 col-xl-2 sidebar">
+            <div class="text-center mb-4">
+                <img src="https://www.unip.br/img/logo_unip.png" class="img-fluid logo-unip" alt="UNIP" style="max-width:120px">
+            </div>
+            <h5 class="text-light mb-3">⚙️ Central de Simulação</h5>
+            <p class="small text-muted mb-4">Ajuste os parâmetros do FastTree e clique em <b class="text-success">Re-treinar IA</b>.</p>
+
+            <div class="mb-3">
+                <label class="form-label text-light">🎯 EPI / Material Analisado</label>
+                <select id="selEpi" class="form-select bg-dark text-light border-secondary"></select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label text-light d-flex justify-content-between">
+                    🌲 Nº de Árvores (Boosting)
+                    <span id="valArvores" class="text-success">100</span>
+                </label>
+                <input type="range" class="form-range range-slider" id="rngArvores" min="10" max="500" step="10" value="100">
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label text-light d-flex justify-content-between">
+                    🍃 Nº de Folhas (Profundidade)
+                    <span id="valFolhas" class="text-success">20</span>
+                </label>
+                <input type="range" class="form-range range-slider" id="rngFolhas" min="2" max="50" step="1" value="20">
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label text-light d-flex justify-content-between">
+                    📉 Taxa de Aprendizado (LR)
+                    <span id="valLr" class="text-success">0,20</span>
+                </label>
+                <input type="range" class="form-range range-slider" id="rngLr" min="1" max="100" step="1" value="20">
+                <small class="text-muted">0,01 a 1,00 (padrão 0,20)</small>
+            </div>
+
+            <div class="mb-4">
+                <label class="form-label text-light d-flex justify-content-between">
+                    🧮 Min Exemplos / Folha
+                    <span id="valMinLeaf" class="text-success">5</span>
+                </label>
+                <input type="range" class="form-range range-slider" id="rngMinLeaf" min="1" max="50" step="1" value="5">
+            </div>
+
+            <button id="btnTreinar" class="btn btn-success w-100 fw-bold mb-3">
+                ⚡ Re-treinar IA (FastTree)
+            </button>
+
+            <div class="card bg-dark border-secondary mb-3">
+                <div class="card-body p-2 text-center small">
+                    <div class="text-muted">Colaboradores / PCD</div>
+                    <div><b id="txtColabs" class="text-primary">--</b> /
+                         <b id="txtPcds" class="text-warning">--</b></div>
+                </div>
+            </div>
+
+            <hr class="border-secondary">
+            <div class="small text-muted">
+                <p class="mb-1">🏗️ Stack: <b class="text-light">C# 12 / .NET 8</b></p>
+                <p class="mb-1">🧠 Modelo: <b class="text-light">ML.NET FastTreeReg</b></p>
+                <p>📐 Paradigma: <b class="text-warning">Gradient Boosting</b></p>
+            </div>
+        </aside>
+
+        <!-- ===================== CONTEUDO PRINCIPAL ===================== -->
+        <main class="col-lg-9 col-xl-10 py-4 px-4">
+
+            <!-- CABECALHO -->
+            <h1 class="h2 mb-1">🛡️ Supply Chain Inteligente & Ergonomia Inclusiva</h1>
+            <p class="text-muted mb-4">Protótipo de TCC • Ciência da Computação UNIP • Benchmark C# .NET 8 × Python Scikit-Learn</p>
+
+            <!-- ================= CARDS DE METRICAS ================= -->
+            <div class="row g-3 mb-4">
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">🎯 MAE FastTree (C#)</span>
+                        <div class="metric-value" id="mMae">--</div>
+                        <small class="text-muted">Baseline MM3: <b id="mMaeBase">--</b></small>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">📈 Ganho de Precisão</span>
+                        <div class="metric-value text-info" id="mGanho">--</div>
+                        <small class="text-muted">Versus média móvel 3 meses</small>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">⏱️ Tempo Treinamento</span>
+                        <div class="metric-value text-warning" id="mTempo">--</div>
+                        <small class="text-muted">Inferência: <b id="mInf">--</b> ms</small>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">♿ Itens Adaptados (PCD/NR-17)</span>
+                        <div class="metric-value text-primary" id="mAdapt">--</div>
+                        <small class="text-muted">Volume 90 dias: <b id="mVol">--</b> un.</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Segunda linha de cards -->
+            <div class="row g-3 mb-4">
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">📐 RMSE FastTree (C#)</span>
+                        <div class="metric-value text-success" id="mRmse">--</div>
+                        <small class="text-muted">Baseline MM3: <b id="mRmseBase">--</b></small>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">📊 Registros Históricos</span>
+                        <div class="metric-value text-info" id="mTotalReg">--</div>
+                        <small class="text-muted">Linhas geradas (seed 42)</small>
+                    </div>
+                </div>
+                <div class="col-sm-6 col-xl-3">
+                    <div class="card card-metric p-3">
+                        <span class="metric-label">✂️ Divisão Treino / Teste</span>
+                        <div class="metric-value text-warning" id="mDivisao">--</div>
+                        <small class="text-muted">Treino: <b id="mNTreino">--</b> | Teste: <b id="mNTeste">--</b></small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= TABS ================= -->
+            <ul class="nav nav-tabs mb-4 border-bottom-0" id="tabsNav" role="tablist">
+                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabPrev">📈 Previsão de Demanda (ML.NET)</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabRh">♿ Ergonomia & Inclusão (RH)</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabDados">📂 Dados Brutos & Sumário</button></li>
+            </ul>
+
+            <div class="tab-content">
+                <!-- ======= TAB 1: PREVISAO ======= -->
+                <div class="tab-pane fade show active" id="tabPrev">
+                    <div class="card bg-dark border-secondary mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Projeção de Consumo: <span id="hEpi" class="text-success">--</span></h5>
+                            <span class="badge-pill bg-primary">Histórico (24m) + Previsão (90d)</span>
+                        </div>
+                        <div class="card-body"><canvas id="chartDemanda" height="110"></canvas></div>
+                    </div>
+
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <div class="card bg-dark border-secondary">
+                                <div class="card-header"><h6 class="mb-0">📋 Sumário Mensal (Próximos 3 meses)</h6></div>
+                                <div class="card-body p-0">
+                                    <table class="table table-dark table-hover mb-0">
+                                        <thead class="bg-black"><tr><th>Mês</th><th class="text-end">Bruto</th><th class="text-end">Adaptado</th><th class="text-end">Especiais</th></tr></thead>
+                                        <tbody id="tblSumario"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card bg-dark border-secondary">
+                                <div class="card-header"><h6 class="mb-0">🧑‍🦯 Perfil de Restrições (RH)</h6></div>
+                                <div class="card-body"><canvas id="chartRh" height="140"></canvas></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ======= TAB 2: REGRAS INCLUSIVAS ======= -->
+                <div class="tab-pane fade" id="tabRh">
+                    <div class="card bg-dark border-secondary mb-3">
+                        <div class="card-header">
+                            <h5 class="mb-0">♿ Relatório Inteligente de Compras (Mix Adaptado — NR-17)</h5>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-dark table-striped table-hover mb-0">
+                                    <thead class="bg-black">
+                                        <tr>
+                                            <th>Mês</th><th>Setor</th><th>Material</th>
+                                            <th class="text-end">Prev.</th><th class="text-end">Adapt.</th>
+                                            <th class="text-end">Esp.</th><th>Item Especial</th>
+                                            <th class="text-end">Pares</th>
+                                            <th class="text-end">Avul. E/D</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="tblRegras"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ======= TAB 3: DADOS BRUTOS ======= -->
+                <div class="tab-pane fade" id="tabDados">
+                    <div class="card bg-dark border-secondary mb-3">
+                        <div class="card-header"><h5 class="mb-0">🧾 Pipeline Executado — Info Técnica</h5></div>
+                        <div class="card-body">
+                            <div class="row g-3 text-center">
+                                <div class="col-4"><div class="card p-2 bg-black border-secondary"><small class="text-muted">Treino</small><div class="h4 text-success" id="mTreino">--</div></div></div>
+                                <div class="col-4"><div class="card p-2 bg-black border-secondary"><small class="text-muted">Teste</small><div class="h4 text-info" id="mTeste">--</div></div></div>
+                                <div class="col-4"><div class="card p-2 bg-black border-secondary"><small class="text-muted">Proj. (90d)</small><div class="h4 text-warning" id="mPrev">--</div></div></div>
+                            </div>
+                            <hr class="border-secondary mt-4 mb-3">
+                            <div class="small text-muted">
+                                <p><b>Hipótese:</b> FastTree (Gradient Boosted Decision Trees) — C# nativo .NET 8 — apresenta MAE inferior ao Random Forest (Bagging) do Scikit-Learn Python em demandas com sazonalidade senoidal e Poisson.</p>
+                                <p><b>Métrica:</b> <span class="text-success">MAE = Σ |y - ŷ| / n</span> — quanto menor, melhor.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <footer class="mt-5 pt-3 border-top border-secondary text-muted small">
+                © 2026 TCC UNIP — Ciência da Computação • Benchmark C# (.NET 8 ML.NET FastTree) × Python (Scikit-Learn Random Forest)
+            </footer>
+        </main>
+    </div>
+</div>
+
+<!-- Bootstrap JS (vendorizado em /lib) -->
+<script src="/lib/bootstrap.bundle.min.js"></script>
+
+<script>
+/* ============================================================
+   FRONT-END LOGICA DE CARGA E RENDERIZACAO (FETCH /api/dashboard)
+   ============================================================ */
+let chartDemanda = null, chartRh = null;
+
+// ----- Sliders -----
+const rngArvores = document.getElementById('rngArvores');
+const rngFolhas  = document.getElementById('rngFolhas');
+const rngLr      = document.getElementById('rngLr');
+const rngMinLeaf = document.getElementById('rngMinLeaf');
+const valArvores = document.getElementById('valArvores');
+const valFolhas  = document.getElementById('valFolhas');
+const valLr      = document.getElementById('valLr');
+const valMinLeaf = document.getElementById('valMinLeaf');
+
+[rngArvores, rngFolhas, rngMinLeaf, rngLr].forEach(r =>
+    r.addEventListener('input', () => {
+        valArvores.textContent = rngArvores.value;
+        valFolhas.textContent  = rngFolhas.value;
+        valMinLeaf.textContent = rngMinLeaf.value;
+        valLr.textContent      = (parseInt(rngLr.value)/100).toFixed(2).replace('.',',');
+    })
+);
+
+// ----- Popular select de EPIs + dados de meta -----
+fetch('/api/meta').then(r=>r.json()).then(meta => {
+    const sel = document.getElementById('selEpi');
+    meta.Epis.forEach(e => { const o=document.createElement('option'); o.value=e; o.textContent=e; sel.appendChild(o); });
+    document.getElementById('txtColabs').textContent = meta.Colaboradores;
+    document.getElementById('txtPcds').textContent   = meta.TotalPcds;
+    // Executa primeira carga com EPI padrão
+    carregarDashboard();
+});
+
+document.getElementById('btnTreinar').addEventListener('click', carregarDashboard);
+document.getElementById('selEpi').addEventListener('change', carregarDashboard);
+
+// ----- Build URL query string -----
+function buildUrl() {
+    const params = new URLSearchParams({
+        epi: document.getElementById('selEpi').value || '',
+        arvores: rngArvores.value,
+        folhas: rngFolhas.value,
+        minLeaf: rngMinLeaf.value,
+        lr: (parseInt(rngLr.value)/100).toFixed(3)
+    });
+    return '/api/dashboard?' + params.toString();
+}
+
+// ----- Loader spinner -----
+function setBtnLoading(loading) {
+    const b = document.getElementById('btnTreinar');
+    if (loading) { b.disabled=true; b.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Treinando…'; }
+    else         { b.disabled=false; b.innerHTML='⚡ Re-treinar IA (FastTree)'; }
+}
+
+// ----- Carregar e renderizar tudo -----
+async function carregarDashboard() {
+    setBtnLoading(true);
+    try {
+        const data = await fetch(buildUrl()).then(r=>r.json());
+        document.getElementById('hEpi').textContent = data.EpiSelecionado;
+
+        // === Cards ===
+        document.getElementById('mMae').textContent = data.Cards.Mae.toFixed(3);
+        document.getElementById('mMaeBase').textContent = data.Cards.MaeBaseline.toFixed(3);
+        document.getElementById('mGanho').textContent = data.Cards.GanhoPrecisao.toFixed(1) + ' %';
+        document.getElementById('mTempo').textContent = data.Cards.TempoTreinoMs + ' ms';
+        document.getElementById('mInf').textContent = data.Cards.TempoInferenciaMs;
+        document.getElementById('mAdapt').textContent = data.Cards.TotalItensAdaptados + ' un.';
+        document.getElementById('mVol').textContent = data.Cards.Volume90dBruto.toLocaleString('pt-BR');
+        document.getElementById('mTreino').textContent = data.Cards.LinhasTreino;
+        document.getElementById('mTeste').textContent = data.Cards.LinhasTeste;
+        document.getElementById('mPrev').textContent = data.Cards.TotalPrevisoes;
+        // RMSE cards (Etapa 2)
+        document.getElementById('mRmse').textContent = data.Cards.Rmse.toFixed(3);
+        document.getElementById('mRmseBase').textContent = data.Cards.RmseBaseline.toFixed(3);
+        // Registros / Divisao cards (Etapa 4)
+        const totalReg = data.Cards.LinhasTreino + data.Cards.LinhasTeste;
+        document.getElementById('mTotalReg').textContent = totalReg.toLocaleString('pt-BR');
+        document.getElementById('mNTreino').textContent = data.Cards.LinhasTreino.toLocaleString('pt-BR');
+        document.getElementById('mNTeste').textContent = data.Cards.LinhasTeste.toLocaleString('pt-BR');
+        const pctTreino = totalReg > 0 ? Math.round(data.Cards.LinhasTreino / totalReg * 100) : 0;
+        const pctTeste  = totalReg > 0 ? Math.round(data.Cards.LinhasTeste  / totalReg * 100) : 0;
+        document.getElementById('mDivisao').textContent = pctTreino + '% / ' + pctTeste + '%';
+
+        // === Grafico Demanda ===
+        const hist = data.Grafico.Historico;
+        const prev = data.Grafico.Previsao;
+        const todosLabels = [...new Set([...hist.map(r=>r.Data), ...prev.map(r=>r.Data)])]
+            .sort((a,b)=> { const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/');
+                            return (aa+ma).localeCompare(ab+mb); });
+
+        const histData = todosLabels.map(l => {
+            const r = hist.find(h=>h.Data===l); return r? r.Quantidade: null;
+        });
+        const prevData = todosLabels.map(l => {
+            const r = prev.find(p=>p.Data===l); return r? r.Quantidade: null;
+        });
+        const espData  = todosLabels.map(l => {
+            const r = prev.find(p=>p.Data===l); return r? r.Especial: null;
+        });
+        const baseData = todosLabels.map(l => {
+            const r = (data.Grafico.Baseline || []).find(b => b.Data === l);
+            return r ? r.Quantidade : null;
+        });
+
+        if (chartDemanda) chartDemanda.destroy();
+        chartDemanda = new Chart(document.getElementById('chartDemanda'), {
+            type: 'line',
+            data: {
+                labels: todosLabels,
+                datasets: [
+                    { label:'Consumo Real (Histórico)', data:histData, borderColor:'#334155',
+                      backgroundColor:'rgba(51,65,85,.2)', tension:.25, borderWidth:3,
+                      pointBackgroundColor:'#334155', pointRadius:4, spanGaps:false },
+                    { label:'FastTree (IA) C#', data:prevData, borderColor:'#10b981',
+                      backgroundColor:'rgba(16,185,129,.15)', borderDash:[6,4], tension:.3,
+                      borderWidth:3, pointRadius:5, pointBackgroundColor:'#10b981' },
+                    { label:'Baseline MM3 (Média Móvel)', data:baseData, borderColor:'#f97316',
+                      backgroundColor:'rgba(249,115,22,.10)', borderDash:[3,3], tension:.25,
+                      borderWidth:2, pointRadius:3, pointBackgroundColor:'#f97316', spanGaps:false },
+                    { label:'Itens Especiais Inclusivos', data:espData, type:'bar',
+                      backgroundColor:'rgba(251,191,36,.7)', borderRadius:4, order:2 }
+                ]
+            },
+            options: { responsive:true, plugins:{ legend:{ labels:{ color:'#cbd5e1' } } },
+                       scales: {
+                         x:{ ticks:{ color:'#94a3b8' }, grid:{ color:'rgba(148,163,184,.08)' } },
+                         y:{ ticks:{ color:'#94a3b8' }, grid:{ color:'rgba(148,163,184,.08)' },
+                             beginAtZero:true, title:{ display:true, text:'Unidades Consumidas', color:'#94a3b8' } } } }
+        });
+
+        // === Sumário Mensal ===
+        const tSum = document.getElementById('tblSumario');
+        tSum.innerHTML = data.SumarioMensal.map(s =>
+            `<tr><td>${s.Mes}</td>
+                <td class="text-end">${s.Bruto.toLocaleString('pt-BR')}</td>
+                <td class="text-end text-success">${s.Adaptado.toLocaleString('pt-BR')}</td>
+                <td class="text-end text-warning">${s.Especial}</td></tr>`
+        ).join('');
+
+        // === Tabela Regras Inclusivas ===
+        const tReg = document.getElementById('tblRegras');
+        tReg.innerHTML = data.PainelInclusivo.map(p =>
+            `<tr>
+                <td>${p.Mes}</td><td>${p.Setor}</td><td>${p.Material}</td>
+                <td class="text-end">${p.PrevisaoBruta}</td>
+                <td class="text-end text-success">${p.PrevisaoAdaptada}</td>
+                <td class="text-end text-warning">${p.QuantidadeEspecial}</td>
+                <td><small title="${p.Observacao}">${p.ItemEspecial}</small></td>
+                <td class="text-end">${p.ParesCompletos || '—'}</td>
+                <td class="text-end">${p.LuvasAvulsasEsquerda+p.LuvasAvulsasDireita > 0
+                    ? p.LuvasAvulsasEsquerda+' / '+p.LuvasAvulsasDireita : '—'}</td>
+             </tr>`
+        ).join('');
+
+        // === Gráfico RH ===
+        const rhLabels = data.PerfilRh.map(r=>r.Restricao);
+        const rhValues = data.PerfilRh.map(r=>r.Quantidade);
+        const coresSafe = ['#10b981','#38bdf8','#f59e0b','#ef4444','#a855f7','#ec4899','#06b6d4','#f97316'];
+        if (chartRh) chartRh.destroy();
+        chartRh = new Chart(document.getElementById('chartRh'), {
+            type: 'doughnut',
+            data: { labels: rhLabels,
+                    datasets: [{ data: rhValues,
+                                 backgroundColor: coresSafe.slice(0, rhLabels.length),
+                                 borderColor:'#0f172a', borderWidth:2 }] },
+            options: { plugins:{ legend:{ position:'right', labels:{ color:'#cbd5e1', font:{size:11}}}}}
+        });
+
+    } catch (e) {
+        alert('Erro ao carregar dashboard: '+e.message);
+    } finally { setBtnLoading(false); }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!-- O usuario final pode usar net8.0. Aqui usamos net8.0 com RollForward
+         para compatibilidade com SDKs mais novos instalados na maquina. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <RootNamespace>TccBenchmark</RootNamespace>
+    <AssemblyName>TccBenchmark</AssemblyName>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML" Version="3.0.1" />
+    <PackageReference Include="Microsoft.ML.FastTree" Version="3.0.1" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.10.0" />
+  </ItemGroup>
+
+</Project>
