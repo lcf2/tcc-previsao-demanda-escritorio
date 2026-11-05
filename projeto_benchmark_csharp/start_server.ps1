@@ -1,7 +1,14 @@
 # start_server.ps1 - Sobe o servidor web publicado e valida endpoints
 $ErrorActionPreference = "Stop"
-$publishDir = "c:\Users\USER\Documents\trae_projects\TCC_Materiais_Escritorio\projeto_benchmark_csharp\publish"
+$projectDir = $PSScriptRoot
+$project = Join-Path $projectDir "TccBenchmark.csproj"
+$publishDir = Join-Path $projectDir "bin\Release\net8.0\publish"
 $exe = Join-Path $publishDir "TccBenchmark.exe"
+
+dotnet publish $project --configuration Release --output $publishDir
+if ($LASTEXITCODE -ne 0) {
+  throw "Falha ao publicar o dashboard C#."
+}
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $exe

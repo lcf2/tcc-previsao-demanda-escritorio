@@ -37,13 +37,24 @@
         <!-- ===================== SIDEBAR ===================== -->
         <aside class="col-lg-3 col-xl-2 sidebar">
             <div class="text-center mb-4">
-                <img src="https://www.unip.br/img/logo_unip.png" class="img-fluid logo-unip" alt="UNIP" style="max-width:120px">
+                <img src="/logo-unip.webp" class="img-fluid logo-unip" alt="UNIP - Universidade Paulista" style="max-width:150px">
             </div>
             <h5 class="text-light mb-3">⚙️ Central de Simulação</h5>
             <p class="small text-muted mb-4">Ajuste os parâmetros do FastTree e clique em <b class="text-success">Re-treinar IA</b>.</p>
 
             <div class="mb-3">
-                <label class="form-label text-light">🎯 EPI / Material Analisado</label>
+                <label for="arquivoXlsx" class="form-label text-light">📂 Importar Excel completo (.xlsx)</label>
+                <input id="arquivoXlsx" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
+                       type="file" accept=".xlsx">
+                <button id="btnImportar" class="btn btn-outline-success btn-sm w-100">Carregar dados do Excel</button>
+                <small class="text-muted d-block mt-2">Usa a MB51 detalhada. Planilha9 serve para conferência e não é somada novamente.</small>
+                <small class="text-warning d-block mt-1">Todos os movimentos são somados por mês; o tipo de movimento ainda não é classificado. Valide a regra de consumo antes de interpretar os resultados.</small>
+                <small id="txtUploadStatus" class="text-muted d-block mt-2" role="status"></small>
+            </div>
+            <div class="small text-info mb-3" id="txtOrigemDados">Origem: --</div>
+
+            <div class="mb-3">
+                <label class="form-label text-light">🎯 Material Analisado</label>
                 <select id="selEpi" class="form-select bg-dark text-light border-secondary"></select>
             </div>
 
@@ -113,14 +124,14 @@
                     <div class="card card-metric p-3">
                         <span class="metric-label">🎯 MAE FastTree (C#)</span>
                         <div class="metric-value" id="mMae">--</div>
-                        <small class="text-muted">Baseline MM3: <b id="mMaeBase">--</b></small>
+                        <small class="text-muted">Último consumo observado: <b id="mMaeBase">--</b></small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
                     <div class="card card-metric p-3">
                         <span class="metric-label">📈 Ganho de Precisão</span>
                         <div class="metric-value text-info" id="mGanho">--</div>
-                        <small class="text-muted">Versus média móvel 3 meses</small>
+                        <small class="text-muted">Versus último consumo observado</small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
@@ -145,14 +156,14 @@
                     <div class="card card-metric p-3">
                         <span class="metric-label">📐 RMSE FastTree (C#)</span>
                         <div class="metric-value text-success" id="mRmse">--</div>
-                        <small class="text-muted">Baseline MM3: <b id="mRmseBase">--</b></small>
+                        <small class="text-muted">Último consumo observado: <b id="mRmseBase">--</b></small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
                     <div class="card card-metric p-3">
                         <span class="metric-label">📊 Registros Históricos</span>
                         <div class="metric-value text-info" id="mTotalReg">--</div>
-                        <small class="text-muted">Linhas geradas (seed 42)</small>
+                        <small class="text-muted">Linhas da base ativa</small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
@@ -177,7 +188,7 @@
                     <div class="card bg-dark border-secondary mb-4">
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <h5 class="mb-0">Projeção de Consumo: <span id="hEpi" class="text-success">--</span></h5>
-                            <span class="badge-pill bg-primary">Histórico (24m) + Previsão (90d)</span>
+                            <span class="badge-pill bg-primary">Histórico ativo + Previsão (90d)</span>
                         </div>
                         <div class="card-body"><canvas id="chartDemanda" height="110"></canvas></div>
                     </div>
@@ -283,18 +294,62 @@ const valMinLeaf = document.getElementById('valMinLeaf');
     })
 );
 
-// ----- Popular select de EPIs + dados de meta -----
-fetch('/api/meta').then(r=>r.json()).then(meta => {
+// ----- Popular select de materiais + dados de meta -----
+async function atualizarMeta() {
+    const response = await fetch('/api/meta');
+    if (!response.ok) throw new Error('Não foi possível carregar os dados do dashboard.');
+    const meta = await response.json();
     const sel = document.getElementById('selEpi');
-    meta.Epis.forEach(e => { const o=document.createElement('option'); o.value=e; o.textContent=e; sel.appendChild(o); });
-    document.getElementById('txtColabs').textContent = meta.Colaboradores;
-    document.getElementById('txtPcds').textContent   = meta.TotalPcds;
-    // Executa primeira carga com EPI padrão
-    carregarDashboard();
+    const epis = meta.epis ?? meta.Epis ?? [];
+    sel.innerHTML = '';
+    epis.forEach(e => { const o=document.createElement('option'); o.value=e; o.textContent=e; sel.appendChild(o); });
+    document.getElementById('txtColabs').textContent = meta.colaboradores ?? meta.Colaboradores;
+    document.getElementById('txtPcds').textContent   = meta.totalPcds ?? meta.TotalPcds;
+    const origem = meta.origem ?? meta.Origem;
+    document.getElementById('txtOrigemDados').textContent =
+        'Origem: ' + origem +
+        ((meta.dadosReais ?? meta.DadosReais) ? ' | Sem dados de RH/setor' : '');
+}
+
+atualizarMeta().then(carregarDashboard).catch(error => {
+    document.getElementById('txtUploadStatus').textContent = error.message;
 });
 
 document.getElementById('btnTreinar').addEventListener('click', carregarDashboard);
 document.getElementById('selEpi').addEventListener('change', carregarDashboard);
+document.getElementById('btnImportar').addEventListener('click', async () => {
+    const input = document.getElementById('arquivoXlsx');
+    const status = document.getElementById('txtUploadStatus');
+    if (!input.files.length) {
+        status.textContent = 'Selecione um arquivo .xlsx.';
+        return;
+    }
+
+    const form = new FormData();
+    form.append('arquivo', input.files[0]);
+    const button = document.getElementById('btnImportar');
+    button.disabled = true;
+    status.textContent = 'Importando movimentações e conferindo o resumo...';
+    try {
+        const response = await fetch('/api/upload', { method: 'POST', body: form });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.erro ?? 'Falha ao importar o arquivo.');
+        const divergencias = result.divergenciasComPlanilha9 ?? result.DivergenciasComPlanilha9;
+        const conferidos = result.agrupamentosConferidos ?? result.AgrupamentosConferidos;
+        status.textContent =
+            `${result.mensagem} ${result.movimentacoes ?? result.Movimentacoes} movimentações, ` +
+            `${result.materiais} materiais, ${result.inicio} a ${result.fim}. ` +
+            (conferidos > 0
+                ? `Conferência Planilha9: ${conferidos} grupos, ${divergencias} divergências.`
+                : 'Não foi possível conferir com Planilha9.');
+        await atualizarMeta();
+        await carregarDashboard();
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        button.disabled = false;
+    }
+});
 
 // ----- Build URL query string -----
 function buildUrl() {
@@ -319,51 +374,61 @@ function setBtnLoading(loading) {
 async function carregarDashboard() {
     setBtnLoading(true);
     try {
-        const data = await fetch(buildUrl()).then(r=>r.json());
-        document.getElementById('hEpi').textContent = data.EpiSelecionado;
+        const response = await fetch(buildUrl());
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail ?? data.title ?? 'Erro ao gerar a previsão.');
+        document.getElementById('hEpi').textContent = data.epiSelecionado ?? data.EpiSelecionado;
 
         // === Cards ===
-        document.getElementById('mMae').textContent = data.Cards.Mae.toFixed(3);
-        document.getElementById('mMaeBase').textContent = data.Cards.MaeBaseline.toFixed(3);
-        document.getElementById('mGanho').textContent = data.Cards.GanhoPrecisao.toFixed(1) + ' %';
-        document.getElementById('mTempo').textContent = data.Cards.TempoTreinoMs + ' ms';
-        document.getElementById('mInf').textContent = data.Cards.TempoInferenciaMs;
-        document.getElementById('mAdapt').textContent = data.Cards.TotalItensAdaptados + ' un.';
-        document.getElementById('mVol').textContent = data.Cards.Volume90dBruto.toLocaleString('pt-BR');
-        document.getElementById('mTreino').textContent = data.Cards.LinhasTreino;
-        document.getElementById('mTeste').textContent = data.Cards.LinhasTeste;
-        document.getElementById('mPrev').textContent = data.Cards.TotalPrevisoes;
-        // RMSE cards (Etapa 2)
-        document.getElementById('mRmse').textContent = data.Cards.Rmse.toFixed(3);
-        document.getElementById('mRmseBase').textContent = data.Cards.RmseBaseline.toFixed(3);
-        // Registros / Divisao cards (Etapa 4)
-        const totalReg = data.Cards.LinhasTreino + data.Cards.LinhasTeste;
+        // ASP.NET Core Minimal API serializa em camelCase por padrão
+        const c = data.cards ?? data.Cards; // suporte a ambos os formatos
+        document.getElementById('mMae').textContent = (c.mae ?? c.Mae).toFixed(3);
+        document.getElementById('mMaeBase').textContent = (c.maeBaseline ?? c.MaeBaseline).toFixed(3);
+        document.getElementById('mGanho').textContent = (c.ganhoPrecisao ?? c.GanhoPrecisao).toFixed(1) + ' %';
+        document.getElementById('mTempo').textContent = (c.tempoTreinoMs ?? c.TempoTreinoMs) + ' ms';
+        document.getElementById('mInf').textContent = (c.tempoInferenciaMs ?? c.TempoInferenciaMs);
+        document.getElementById('mAdapt').textContent = (c.totalItensAdaptados ?? c.TotalItensAdaptados) + ' un.';
+        document.getElementById('mVol').textContent = (c.volume90dBruto ?? c.Volume90dBruto).toLocaleString('pt-BR');
+        document.getElementById('mTreino').textContent = (c.linhasTreino ?? c.LinhasTreino);
+        document.getElementById('mTeste').textContent = (c.linhasTeste ?? c.LinhasTeste);
+        document.getElementById('mPrev').textContent = (c.totalPrevisoes ?? c.TotalPrevisoes);
+        // RMSE cards
+        document.getElementById('mRmse').textContent = (c.rmse ?? c.Rmse).toFixed(3);
+        document.getElementById('mRmseBase').textContent = (c.rmseBaseline ?? c.RmseBaseline).toFixed(3);
+        // Registros / Divisao cards
+        const linhasTreino = c.linhasTreino ?? c.LinhasTreino;
+        const linhasTeste  = c.linhasTeste  ?? c.LinhasTeste;
+        const totalReg = linhasTreino + linhasTeste;
         document.getElementById('mTotalReg').textContent = totalReg.toLocaleString('pt-BR');
-        document.getElementById('mNTreino').textContent = data.Cards.LinhasTreino.toLocaleString('pt-BR');
-        document.getElementById('mNTeste').textContent = data.Cards.LinhasTeste.toLocaleString('pt-BR');
-        const pctTreino = totalReg > 0 ? Math.round(data.Cards.LinhasTreino / totalReg * 100) : 0;
-        const pctTeste  = totalReg > 0 ? Math.round(data.Cards.LinhasTeste  / totalReg * 100) : 0;
+        document.getElementById('mNTreino').textContent = linhasTreino.toLocaleString('pt-BR');
+        document.getElementById('mNTeste').textContent = linhasTeste.toLocaleString('pt-BR');
+        const pctTreino = totalReg > 0 ? Math.round(linhasTreino / totalReg * 100) : 0;
+        const pctTeste  = totalReg > 0 ? Math.round(linhasTeste  / totalReg * 100) : 0;
         document.getElementById('mDivisao').textContent = pctTreino + '% / ' + pctTeste + '%';
 
         // === Grafico Demanda ===
-        const hist = data.Grafico.Historico;
-        const prev = data.Grafico.Previsao;
-        const todosLabels = [...new Set([...hist.map(r=>r.Data), ...prev.map(r=>r.Data)])]
-            .sort((a,b)=> { const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/');
+        const grafico = data.grafico ?? data.Grafico;
+        const hist = grafico.historico ?? grafico.Historico;
+        const prev = grafico.previsao  ?? grafico.Previsao;
+        const baseline = grafico.baseline ?? grafico.Baseline ?? [];
+        const todosLabels = [...new Set([
+                ...hist.map(r => r.data ?? r.Data),
+                ...prev.map(r => r.data ?? r.Data)
+            ])].sort((a,b)=> { const [ma,aa]=a.split('/'); const [mb,ab]=b.split('/');
                             return (aa+ma).localeCompare(ab+mb); });
 
         const histData = todosLabels.map(l => {
-            const r = hist.find(h=>h.Data===l); return r? r.Quantidade: null;
+            const r = hist.find(h=>(h.data??h.Data)===l); return r ? (r.quantidade??r.Quantidade) : null;
         });
         const prevData = todosLabels.map(l => {
-            const r = prev.find(p=>p.Data===l); return r? r.Quantidade: null;
+            const r = prev.find(p=>(p.data??p.Data)===l); return r ? (r.quantidade??r.Quantidade) : null;
         });
         const espData  = todosLabels.map(l => {
-            const r = prev.find(p=>p.Data===l); return r? r.Especial: null;
+            const r = prev.find(p=>(p.data??p.Data)===l); return r ? (r.especial??r.Especial) : null;
         });
         const baseData = todosLabels.map(l => {
-            const r = (data.Grafico.Baseline || []).find(b => b.Data === l);
-            return r ? r.Quantidade : null;
+            const r = baseline.find(b => (b.data??b.Data) === l);
+            return r ? (r.quantidade??r.Quantidade) : null;
         });
 
         if (chartDemanda) chartDemanda.destroy();
@@ -378,7 +443,7 @@ async function carregarDashboard() {
                     { label:'FastTree (IA) C#', data:prevData, borderColor:'#10b981',
                       backgroundColor:'rgba(16,185,129,.15)', borderDash:[6,4], tension:.3,
                       borderWidth:3, pointRadius:5, pointBackgroundColor:'#10b981' },
-                    { label:'Baseline MM3 (Média Móvel)', data:baseData, borderColor:'#f97316',
+                    { label:'Baseline (último consumo observado)', data:baseData, borderColor:'#f97316',
                       backgroundColor:'rgba(249,115,22,.10)', borderDash:[3,3], tension:.25,
                       borderWidth:2, pointRadius:3, pointBackgroundColor:'#f97316', spanGaps:false },
                     { label:'Itens Especiais Inclusivos', data:espData, type:'bar',
@@ -394,31 +459,48 @@ async function carregarDashboard() {
 
         // === Sumário Mensal ===
         const tSum = document.getElementById('tblSumario');
-        tSum.innerHTML = data.SumarioMensal.map(s =>
-            `<tr><td>${s.Mes}</td>
-                <td class="text-end">${s.Bruto.toLocaleString('pt-BR')}</td>
-                <td class="text-end text-success">${s.Adaptado.toLocaleString('pt-BR')}</td>
-                <td class="text-end text-warning">${s.Especial}</td></tr>`
-        ).join('');
+        const sumario = data.sumarioMensal ?? data.SumarioMensal ?? [];
+        tSum.innerHTML = sumario.map(s => {
+            const mes     = s.mes     ?? s.Mes;
+            const bruto   = s.bruto   ?? s.Bruto   ?? 0;
+            const adaptado= s.adaptado?? s.Adaptado ?? 0;
+            const especial= s.especial?? s.Especial ?? 0;
+            return `<tr><td>${mes}</td>
+                <td class="text-end">${bruto.toLocaleString('pt-BR')}</td>
+                <td class="text-end text-success">${adaptado.toLocaleString('pt-BR')}</td>
+                <td class="text-end text-warning">${especial}</td></tr>`;
+        }).join('');
 
         // === Tabela Regras Inclusivas ===
         const tReg = document.getElementById('tblRegras');
-        tReg.innerHTML = data.PainelInclusivo.map(p =>
-            `<tr>
-                <td>${p.Mes}</td><td>${p.Setor}</td><td>${p.Material}</td>
-                <td class="text-end">${p.PrevisaoBruta}</td>
-                <td class="text-end text-success">${p.PrevisaoAdaptada}</td>
-                <td class="text-end text-warning">${p.QuantidadeEspecial}</td>
-                <td><small title="${p.Observacao}">${p.ItemEspecial}</small></td>
-                <td class="text-end">${p.ParesCompletos || '—'}</td>
-                <td class="text-end">${p.LuvasAvulsasEsquerda+p.LuvasAvulsasDireita > 0
-                    ? p.LuvasAvulsasEsquerda+' / '+p.LuvasAvulsasDireita : '—'}</td>
-             </tr>`
-        ).join('');
+        const painel = data.painelInclusivo ?? data.PainelInclusivo ?? [];
+        tReg.innerHTML = painel.map(p => {
+            const mes      = p.mes      ?? p.Mes;
+            const setor    = p.setor    ?? p.Setor;
+            const material = p.material ?? p.Material;
+            const prevBruta= p.previsaoBruta    ?? p.PrevisaoBruta    ?? 0;
+            const prevAdap = p.previsaoAdaptada ?? p.PrevisaoAdaptada ?? 0;
+            const qtdEsp   = p.quantidadeEspecial ?? p.QuantidadeEspecial ?? 0;
+            const itemEsp  = p.itemEspecial ?? p.ItemEspecial ?? '';
+            const obs      = p.observacao  ?? p.Observacao  ?? '';
+            const pares    = p.paresCompletos ?? p.ParesCompletos ?? 0;
+            const lavE     = p.luvasAvulsasEsquerda ?? p.LuvasAvulsasEsquerda ?? 0;
+            const lavD     = p.luvasAvulsasDireita  ?? p.LuvasAvulsasDireita  ?? 0;
+            return `<tr>
+                <td>${mes}</td><td>${setor}</td><td>${material}</td>
+                <td class="text-end">${prevBruta}</td>
+                <td class="text-end text-success">${prevAdap}</td>
+                <td class="text-end text-warning">${qtdEsp}</td>
+                <td><small title="${obs}">${itemEsp}</small></td>
+                <td class="text-end">${pares || '—'}</td>
+                <td class="text-end">${lavE + lavD > 0 ? lavE + ' / ' + lavD : '—'}</td>
+             </tr>`;
+        }).join('');
 
         // === Gráfico RH ===
-        const rhLabels = data.PerfilRh.map(r=>r.Restricao);
-        const rhValues = data.PerfilRh.map(r=>r.Quantidade);
+        const perfilRh = data.perfilRh ?? data.PerfilRh ?? [];
+        const rhLabels = perfilRh.map(r => r.restricao ?? r.Restricao);
+        const rhValues = perfilRh.map(r => r.quantidade ?? r.Quantidade);
         const coresSafe = ['#10b981','#38bdf8','#f59e0b','#ef4444','#a855f7','#ec4899','#06b6d4','#f97316'];
         if (chartRh) chartRh.destroy();
         chartRh = new Chart(document.getElementById('chartRh'), {

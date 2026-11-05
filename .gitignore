@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# .NET build and publish output
+**/bin/
+**/obj/
+projeto_benchmark_csharp/publish/
+
+# Local agent/task notes and environment-specific files
+.agents/
+.env
+.env.*
+*.user
+*.suo
+projeto_benchmark_csharp/_boot_and_test.ps1
+
+# Local data files (may contain confidential records)
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.csv

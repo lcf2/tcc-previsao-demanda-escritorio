@@ -8,6 +8,7 @@
 //   InclusiveRulesEngine    -> Mix Luvas E/D + Regras NR-17
 // =====================================================================
 using System.Text.Json;
+using System.Xml;
 using TccBenchmark.Models;
 using TccBenchmark.Services;
 
@@ -23,16 +24,23 @@ builder.Services.AddSwaggerGen();
 // Singletons: gerador de dados (seed fixo) e ML treinado
 builder.Services.AddSingleton<SyntheticDataGenerator>();
 builder.Services.AddSingleton<MlPipelineService>();
+builder.Services.AddSingleton<ExcelConsumptionImporter>();
 builder.Services.AddScoped<InclusiveRulesEngine>();
 
 // Cache em memoria do ultimo pipeline executado (evita re-treino em todo F5)
 builder.Services.AddMemoryCache();
 
-// URLs de lancamento - porta 5202 / 5203 (portas limpas / nunca usadas nesta sessao)
-builder.WebHost.UseUrls(
-    "http://localhost:5202",
-    "http://127.0.0.1:5202",
-    "https://localhost:5203");
+// URLs de lancamento - porta 5202 por padrao.
+// Pode ser sobrescrita em tempo de execucao via:
+//   dotnet run --urls "http://localhost:5300"
+//   $env:ASPNETCORE_URLS = "http://localhost:5300" ; dotnet run
+// Nota: UseUrls() tem precedencia maxima e anula --urls, por isso usamos
+// ConfigureKestrel apenas como fallback quando nenhuma URL foi configurada.
+if (string.IsNullOrEmpty(builder.Configuration["urls"]) &&
+    string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
+{
+    builder.WebHost.UseUrls("http://localhost:5202", "https://localhost:5203");
+}
 
 // Garante que UseStaticFiles encontre wwwroot mesmo ao rodar via dotnet run de outras pastas
 builder.Environment.WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot");
@@ -51,8 +59,8 @@ var app = builder.Build();
 var geradorGlobal = app.Services.GetRequiredService<SyntheticDataGenerator>();
 var historicoGlobal = geradorGlobal.GerarHistoricoConsumo(meses: 24);
 var rhGlobal        = geradorGlobal.GerarCadastroRH(totalColabs: 200, taxaPcdEpi: 0.08);
-var listaEpis = historicoGlobal.Select(h => h.Material).Distinct().OrderBy(m => m).ToList();
-var listaSetores = historicoGlobal.Select(h => h.Setor).Distinct().OrderBy(s => s).ToList();
+var dadosSync = new object();
+var origemDadosReal = false;
 
 // ============================================================
 // 3) PIPELINE DE MIDDLEWARE
@@ -67,13 +75,147 @@ app.UseCors(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 // 4) ENDPOINT: GET /api/meta -> listas de EPI/Setor + totais RH
 //    (usado para popular os <select> e <sidebar>)
 // ============================================================
-app.MapGet("/api/meta", () => new
+app.MapGet("/api/meta", () =>
 {
-    Epis = listaEpis,
-    Setores = listaSetores,
-    Colaboradores = rhGlobal.Count,
-    TotalPcds = rhGlobal.Count(c => c.PCD),
-    TotalRestricoes = rhGlobal.Count(c => c.RestricaoErgonomica != "Nenhuma")
+    List<ConsumoHistorico> historicoAtual;
+    bool dadosReais;
+    lock (dadosSync)
+    {
+        historicoAtual = historicoGlobal;
+        dadosReais = origemDadosReal;
+    }
+
+    List<Colaborador> colaboradores = dadosReais ? [] : rhGlobal;
+    return new
+    {
+        Epis = historicoAtual.Select(h => h.Material).Distinct().OrderBy(m => m).ToList(),
+        Setores = historicoAtual.Select(h => h.Setor).Distinct().OrderBy(s => s).ToList(),
+        Colaboradores = colaboradores.Count,
+        TotalPcds = colaboradores.Count(c => c.PCD),
+        TotalRestricoes = colaboradores.Count(c => c.RestricaoErgonomica != "Nenhuma"),
+        DadosReais = dadosReais,
+        Origem = dadosReais ? "Real - MB51 detalhada" : "Sintéticos (seed 42)"
+    };
+});
+
+app.MapPost("/api/upload", async (HttpRequest request, ExcelConsumptionImporter importer) =>
+{
+    if (!request.HasFormContentType)
+        return Results.BadRequest(new { erro = "Envie um arquivo .xlsx como formulário multipart." });
+
+    var form = await request.ReadFormAsync();
+    var file = form.Files.GetFile("arquivo");
+    if (file is null || file.Length == 0)
+        return Results.BadRequest(new { erro = "Selecione um arquivo .xlsx para importar." });
+
+    if (!string.Equals(Path.GetExtension(file.FileName), ".xlsx", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { erro = "O formato aceito é .xlsx." });
+
+    try
+    {
+        await using var stream = file.OpenReadStream();
+        var resultadoImportacao = importer.Import(stream);
+        lock (dadosSync)
+        {
+            historicoGlobal = resultadoImportacao.Historico;
+            origemDadosReal = true;
+        }
+
+        return Results.Ok(new
+        {
+            mensagem = $"Dados importados da aba {resultadoImportacao.AbaDeOrigem}.",
+            abaDeOrigem = resultadoImportacao.AbaDeOrigem,
+            movimentacoes = resultadoImportacao.MovimentacoesLidas,
+            subtotaisIgnorados = resultadoImportacao.LinhasDeSubtotalIgnoradas,
+            agrupamentosConferidos = resultadoImportacao.AgrupamentosConferidos,
+            divergenciasComPlanilha9 = resultadoImportacao.DivergenciasComPlanilha9,
+            registros = resultadoImportacao.Historico.Count,
+            materiais = resultadoImportacao.Historico.Select(h => h.Material).Distinct().Count(),
+            inicio = resultadoImportacao.Historico.Min(h => h.Data).ToString("MM/yyyy"),
+            fim = resultadoImportacao.Historico.Max(h => h.Data).ToString("MM/yyyy")
+        });
+    }
+    catch (Exception exception) when (exception is InvalidDataException or FormatException or
+                                      ArgumentException or IOException or InvalidOperationException or XmlException)
+    {
+        return Results.BadRequest(new { erro = exception.Message });
+    }
+});
+
+app.MapPost("/api/benchmark", (
+    TemporalBenchmarkRequest request,
+    MlPipelineService ml) =>
+{
+    if (request.Historico.Count == 0)
+        return Results.BadRequest(new { erro = "O benchmark recebeu um histórico vazio." });
+    if (request.Horizonte is < 1 or > 12)
+        return Results.BadRequest(new { erro = "O horizonte deve estar entre 1 e 12 meses." });
+    if (request.Historico.Any(row => string.IsNullOrWhiteSpace(row.Material) ||
+                                     string.IsNullOrWhiteSpace(row.Setor) ||
+                                     !float.IsFinite(row.QuantidadeConsumida) ||
+                                     row.QuantidadeConsumida < 0))
+        return Results.BadRequest(new { erro = "O histórico contém material, setor ou quantidade inválida." });
+
+    var history = request.Historico.Select(row => new ConsumoHistorico
+    {
+        Data = new DateTime(row.Data.Year, row.Data.Month, 1),
+        Material = row.Material,
+        Setor = row.Setor,
+        Categoria = "Benchmark",
+        Subcategoria = "Benchmark",
+        QuantidadeConsumida = row.QuantidadeConsumida
+    }).ToList();
+
+    try
+    {
+        var options = new MlPipelineService.FastTreeOptions(
+            Math.Clamp(request.Arvores, 10, 500),
+            Math.Clamp(request.Folhas, 2, 50),
+            Math.Clamp(request.MinLeaf, 1, 50),
+            Math.Clamp(request.Lr, 0.001, 1.0));
+        var result = ml.ExecutarBenchmarkTemporal(
+            history,
+            request.Corte,
+            request.Horizonte,
+            options);
+
+        return Results.Ok(new
+        {
+            modelo = "FastTree (ML.NET)",
+            corte = new DateTime(request.Corte.Year, request.Corte.Month, 1).ToString("yyyy-MM-dd"),
+            horizonte = request.Horizonte,
+            mesesTeste = Enumerable.Range(1, request.Horizonte)
+                .Select(month => request.Corte.AddMonths(month).ToString("MM/yyyy"))
+                .ToList(),
+            result.Mae,
+            result.Rmse,
+            result.Wape,
+            result.BaselineMae,
+            result.BaselineRmse,
+            result.BaselineWape,
+            result.BaselineTotalPrevisto,
+            result.Vies,
+            result.TotalReal,
+            result.TotalPrevisto,
+            diferencaTotal = result.TotalPrevisto - result.TotalReal,
+            result.Sobreprevisoes,
+            result.Subprevisoes,
+            result.PontosTeste,
+            result.LinhasTreino,
+            result.TempoTreinamentoMs,
+            result.TempoPrevisaoMs,
+            result.TempoCpuMs,
+            result.MemoriaBaseMb,
+            result.PicoMemoriaMb,
+            result.AumentoPicoMemoriaMb,
+            result.Previsoes
+        });
+    }
+    catch (Exception exception) when (exception is InvalidDataException or ArgumentException or
+                                      InvalidOperationException or KeyNotFoundException)
+    {
+        return Results.BadRequest(new { erro = exception.Message });
+    }
 });
 
 // ============================================================
@@ -96,6 +238,17 @@ app.MapGet("/api/dashboard", (
     int minLeaf = 5,
     double lr = 0.2) =>
 {
+    List<ConsumoHistorico> historicoAtual;
+    bool dadosReais;
+    lock (dadosSync)
+    {
+        historicoAtual = historicoGlobal;
+        dadosReais = origemDadosReal;
+    }
+
+    List<Colaborador> colaboradoresAtuais = dadosReais ? [] : rhGlobal;
+    var listaEpis = historicoAtual.Select(h => h.Material).Distinct().OrderBy(m => m).ToList();
+
     // --- Validar / aplicar defaults dos parametros ---
     string epiAtual = string.IsNullOrWhiteSpace(epi) ? listaEpis[0] : epi;
     if (!listaEpis.Contains(epiAtual)) epiAtual = listaEpis[0];
@@ -105,17 +258,17 @@ app.MapGet("/api/dashboard", (
     lr      = Math.Clamp(lr, 0.001, 1.0);
 
     // --- Feature Engineering (dataset completo) ---
-    List<MlFeatureRow> features = ml.ConstruirFeatures(historicoGlobal);
+    List<MlFeatureRow> features = ml.ConstruirFeatures(historicoAtual);
 
     // --- Treino + Avaliacao ---
     var opts = new MlPipelineService.FastTreeOptions(arvores, folhas, minLeaf, lr);
     var (metricas, reaisTeste, previstosTeste) = ml.TreinarEAvaliar(features, opts);
-    metricas.TotalColaboradores = rhGlobal.Count;
-    metricas.TotalPCDs = rhGlobal.Count(c => c.PCD);
+    metricas.TotalColaboradores = colaboradoresAtuais.Count;
+    metricas.TotalPCDs = colaboradoresAtuais.Count(c => c.PCD);
 
     // --- Previsao 3 meses (todos) + filtrar por EPI selecionado ---
-    List<PrevisaoFutura> futurosBrutos = ml.PreverProximos3Meses(historicoGlobal);
-    List<PrevisaoFutura> planoCompras   = regras.AplicarRegras(futurosBrutos, rhGlobal);
+    List<PrevisaoFutura> futurosBrutos = ml.PreverProximos3Meses(historicoAtual);
+    List<PrevisaoFutura> planoCompras   = regras.AplicarRegras(futurosBrutos, colaboradoresAtuais);
 
     metricas.TotalPrevisoesFuturas = planoCompras.Count;
     int totalAdaptados = planoCompras.Sum(p => p.QuantidadeEspecial);
@@ -124,7 +277,7 @@ app.MapGet("/api/dashboard", (
         : 0;
 
     // --- Historico AGREGADO por mes do EPI selecionado ---
-    var serieHistorica = historicoGlobal
+    var serieHistorica = historicoAtual
         .Where(h => h.Material == epiAtual)
         .GroupBy(h => new { h.Data.Year, h.Data.Month })
         .OrderBy(g => g.Key.Year).ThenBy(g => g.Key.Month)
@@ -186,7 +339,7 @@ app.MapGet("/api/dashboard", (
         .ToList();
 
     // --- Perfil RH (pizza): contagem por restricao ---
-    var perfilRh = rhGlobal
+    var perfilRh = colaboradoresAtuais
         .Where(c => c.RestricaoErgonomica != "Nenhuma")
         .GroupBy(c => c.RestricaoErgonomica)
         .OrderByDescending(g => g.Count())
@@ -194,7 +347,7 @@ app.MapGet("/api/dashboard", (
         .ToList();
 
     // --- Dados para o grafico ---
-    // Serie do baseline MM3 no periodo de teste (para grafico comparativo)
+    // Serie do baseline de ultimo consumo observado no periodo de teste.
     var serieBaseline = metricas.DatasTeste
         .Zip(metricas.PrevisoesBaselineTeste, (d, v) => new { Data = d, Quantidade = (int)Math.Round(v) })
         .ToList();
@@ -202,6 +355,8 @@ app.MapGet("/api/dashboard", (
     return new
     {
         EpiSelecionado = epiAtual,
+        OrigemDados = dadosReais ? "Real - MB51 detalhada" : "Sintéticos (seed 42)",
+        DadosReais = dadosReais,
         Opcoes = new { arvores, folhas, minLeaf, lr },
 
         // Cards do topo
@@ -267,10 +422,14 @@ Console.WriteLine("║   TCC UNIP - Dashboard Web (C# .NET 8 + ML.NET FastTree) 
 Console.WriteLine("║   Supply Chain Inclusivo / NR-17 / Ergonomia PCD                       ║");
 Console.WriteLine("╚══════════════════════════════════════════════════════════════════════════╝");
 Console.WriteLine();
-Console.WriteLine("👉 Abra no navegador:  http://localhost:5202");
-Console.WriteLine("                    ou https://localhost:5203");
-Console.WriteLine("👉 API JSON:           http://localhost:5202/api/dashboard?epi=Luva%20Nitrilica%20G");
-Console.WriteLine("👉 Swagger:            http://localhost:5202/swagger");
+// Determina a URL real que sera usada (args > env > padrao)
+string urlAtiva = builder.Configuration["urls"]
+    ?? Environment.GetEnvironmentVariable("ASPNETCORE_URLS")
+    ?? "http://localhost:5202";
+string urlBase = urlAtiva.Split(';')[0].TrimEnd('/');
+Console.WriteLine($"👉 Abra no navegador:  {urlBase}");
+Console.WriteLine($"👉 API JSON:           {urlBase}/api/dashboard?epi=Luva%20Nitrilica%20G");
+Console.WriteLine($"👉 Swagger:            {urlBase}/swagger");
 Console.WriteLine();
 
 app.Run();

@@ -8,6 +8,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 import time
+from pathlib import Path
 
 # =================================================================
 # 1. CONFIGURAÇÃO DA PÁGINA E ESTILO (UI/UX DESIGN)
@@ -218,7 +219,10 @@ def run_ml_pipeline(df_history, target_epi, n_estimators, max_depth):
 
 def main():
     # BARRA LATERAL (SIDEBAR)
-    st.sidebar.image("https://www.unip.br/img/logo_unip.png", width=120)
+    st.sidebar.image(
+        str(Path(__file__).resolve().parent / "assets" / "logo-unip.webp"),
+        width=150,
+    )
     st.sidebar.title("Configurações")
     
     data_mode = st.sidebar.selectbox(

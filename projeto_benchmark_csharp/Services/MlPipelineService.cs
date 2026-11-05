@@ -18,6 +18,7 @@ namespace TccBenchmark.Services;
 public class MlPipelineService
 {
     private readonly MLContext _ml = new(seed: 42);
+    private readonly object _modelLock = new();
     private ITransformer? _modeloTreinado;
     private string[]? _colunasTreino;
 
@@ -34,36 +35,31 @@ public class MlPipelineService
             .ThenBy(h => h.Data)
             .ToList();
 
-        // Chave = (Setor, Material) -> guarda os ultimos 2 valores para Lag
-        var ultimosPorGrupo = new Dictionary<(string, string), (float Lag1, float Lag2)>();
-        var mediaPorGrupo = new Dictionary<(string, string), float>();
-
-        // 1a passagem: calcula media por grupo para preencher NaNs iniciais
-        foreach (var g in ordenado.GroupBy(x => (x.Setor, x.Material)))
-            mediaPorGrupo[g.Key] = (float)g.Average(x => x.QuantidadeConsumida);
-
         var features = new List<MlFeatureRow>(ordenado.Count);
-        foreach (var h in ordenado)
+        foreach (var grupo in ordenado.GroupBy(x => (x.Setor, x.Material)))
         {
-            var chave = (h.Setor, h.Material);
-            float media = mediaPorGrupo[chave];
+            var serie = grupo.OrderBy(h => h.Data).ToList();
+            float mediaLag1 = serie.Count > 1
+                ? serie.Take(serie.Count - 1).Average(h => h.QuantidadeConsumida)
+                : 0;
+            float mediaLag2 = serie.Count > 2
+                ? serie.Take(serie.Count - 2).Average(h => h.QuantidadeConsumida)
+                : 0;
 
-            if (!ultimosPorGrupo.TryGetValue(chave, out var ult))
-                ult = (media, media); // primeira ocorrencia: usa media do grupo
-
-            features.Add(new MlFeatureRow
+            for (int i = 0; i < serie.Count; i++)
             {
-                Mes = h.Mes,
-                Ano = h.Ano,
-                Lag_1 = ult.Lag1,
-                Lag_2 = ult.Lag2,
-                Setor = h.Setor,
-                Material = h.Material,
-                Label = h.QuantidadeConsumida
-            });
-
-            // Atualiza janela deslizante para a proxima linha do grupo
-            ultimosPorGrupo[chave] = (h.QuantidadeConsumida, ult.Lag1);
+                var h = serie[i];
+                features.Add(new MlFeatureRow
+                {
+                    Mes = h.Mes,
+                    Ano = h.Ano,
+                    Lag_1 = i > 0 ? serie[i - 1].QuantidadeConsumida : mediaLag1,
+                    Lag_2 = i > 1 ? serie[i - 2].QuantidadeConsumida : mediaLag2,
+                    Setor = h.Setor,
+                    Material = h.Material,
+                    Label = h.QuantidadeConsumida
+                });
+            }
         }
         return features;
     }
@@ -79,19 +75,42 @@ public class MlPipelineService
 
     // -----------------------------------------------------------------
     // Pipeline completo: Transformacoes + Trainer FastTree + metricas
-    // Usa divisao TEMPORAL 80/20 (sem shuffle) = mesmo protocolo Python.
+    // Usa corte cronologico 80/20 por mes para nao separar materiais do mesmo periodo.
     // Recebe hiperparametros para o usuario ajustar via sidebar.
     // -----------------------------------------------------------------
     public (BenchmarkMetrics Metricas, List<float> ReaisTeste, List<float> PrevistosTeste)
         TreinarEAvaliar(List<MlFeatureRow> todasFeatures, FastTreeOptions? options = null)
     {
+        lock (_modelLock)
+            return TreinarEAvaliarCore(todasFeatures, options);
+    }
+
+    private (BenchmarkMetrics Metricas, List<float> ReaisTeste, List<float> PrevistosTeste)
+        TreinarEAvaliarCore(List<MlFeatureRow> todasFeatures, FastTreeOptions? options)
+    {
         options ??= new FastTreeOptions();
         var swTotal = Stopwatch.StartNew();
 
-        // ========== Divisao Temporal 80/20 (idêntica ao Python) ==========
-        int split = (int)(todasFeatures.Count * 0.8);
-        var treino = todasFeatures.Take(split).ToList();
-        var teste  = todasFeatures.Skip(split).ToList();
+        // ========== Divisao Cronologica 80/20 por mes ==========
+        var dates = todasFeatures
+            .Select(feature => feature.Ano * 100 + feature.Mes)
+            .Distinct()
+            .OrderBy(date => date)
+            .ToList();
+        int splitDateIndex = (int)(dates.Count * 0.8);
+        if (splitDateIndex < 1 || splitDateIndex >= dates.Count)
+            throw new InvalidDataException(
+                "São necessários pelo menos dois meses para avaliação temporal.");
+
+        float cutoff = dates[splitDateIndex - 1];
+        var treino = todasFeatures
+            .Where(feature => feature.Ano * 100 + feature.Mes <= cutoff)
+            .ToList();
+        var teste = todasFeatures
+            .Where(feature => feature.Ano * 100 + feature.Mes > cutoff)
+            .ToList();
+        if (treino.Count == 0 || teste.Count == 0)
+            throw new InvalidDataException("A divisão temporal gerou treino ou teste vazio.");
 
         IDataView dvTreino = _ml.Data.LoadFromEnumerable(treino);
         IDataView dvTeste  = _ml.Data.LoadFromEnumerable(teste);
@@ -99,7 +118,71 @@ public class MlPipelineService
         // ========== Pipeline de Transformacoes ML.NET ==========
         // 1) One-Hot Encoding para Setor e Material
         // 2) Concatenacao de todas as features numericas+encoded em "Features"
-        var pipeline = _ml.Transforms.Categorical.OneHotEncoding("SetorEncoded", nameof(MlFeatureRow.Setor))
+        var pipeline = CriarPipeline(options);
+
+        // ========== Treinamento c/ medicao de tempo ==========
+        var swTreino = Stopwatch.StartNew();
+        _modeloTreinado = pipeline.Fit(dvTreino);
+        swTreino.Stop();
+
+        // ========== Inferencia no conjunto de TESTE ==========
+        var swInf = Stopwatch.StartNew();
+        IDataView predicoesTeste = _modeloTreinado.Transform(dvTeste);
+        var previstos = _ml.Data.CreateEnumerable<MlPrediction>(predicoesTeste, reuseRowObject: false)
+            .Select(p => p.Previsao)
+            .ToList();
+        swInf.Stop();
+
+        var reais = teste.Select(t => t.Label).ToList();
+
+        // ========== Calculo MAE (Mean Absolute Error) ==========
+        double mae = reais.Zip(previstos, (r, p) => Math.Abs(r - p)).Average();
+
+        // Baseline de um passo: último consumo observado da mesma série.
+        var linhaBase = teste.Select(row => row.Lag_1).ToList();
+        double maeBase = reais.Zip(linhaBase, (r, p) => Math.Abs(r - p)).Average();
+
+        // ========== Calculo RMSE (Root Mean Squared Error) ==========
+        double rmse = Math.Sqrt(reais.Zip(previstos, (r, p) => Math.Pow(r - p, 2)).Average());
+        double rmseBase = Math.Sqrt(reais.Zip(linhaBase, (r, p) => Math.Pow(r - p, 2)).Average());
+
+        // Datas do periodo de teste (MM/yyyy) para eixo X do grafico comparativo
+        var datasTeste = teste
+            .Select(t => $"{t.Mes:00}/{t.Ano}")
+            .Distinct()
+            .ToList();
+
+        // Keep holdout metrics from the temporal split, but use all available
+        // history for the operational forecast produced after this evaluation.
+        var swTreinoCompleto = Stopwatch.StartNew();
+        _modeloTreinado = pipeline.Fit(_ml.Data.LoadFromEnumerable(todasFeatures));
+        swTreinoCompleto.Stop();
+        swTotal.Stop();
+
+        _colunasTreino = new[]
+        {
+            nameof(MlFeatureRow.Mes), nameof(MlFeatureRow.Ano),
+            nameof(MlFeatureRow.Lag_1), nameof(MlFeatureRow.Lag_2),
+            nameof(MlFeatureRow.Setor), nameof(MlFeatureRow.Material)
+        };
+
+        return (new BenchmarkMetrics
+        {
+            Mae = mae,
+            MaeBaseline = maeBase,
+            Rmse = rmse,
+            RmseBaseline = rmseBase,
+            TempoTreinamentoMs = swTreino.ElapsedMilliseconds + swTreinoCompleto.ElapsedMilliseconds,
+            TempoInferenciaMs = swInf.ElapsedMilliseconds,
+            LinhasTreino = treino.Count,
+            LinhasTeste = teste.Count,
+            PrevisoesBaselineTeste = linhaBase,
+            DatasTeste = datasTeste
+        }, reais, previstos);
+    }
+
+    private IEstimator<ITransformer> CriarPipeline(FastTreeOptions options)
+        => _ml.Transforms.Categorical.OneHotEncoding("SetorEncoded", nameof(MlFeatureRow.Setor))
             .Append(_ml.Transforms.Categorical.OneHotEncoding("MaterialEncoded", nameof(MlFeatureRow.Material)))
             .Append(_ml.Transforms.Concatenate("Features",
                 nameof(MlFeatureRow.Mes),
@@ -116,99 +199,182 @@ public class MlPipelineService
                 minimumExampleCountPerLeaf: options.MinimumExampleCountPerLeaf,
                 learningRate: (float)options.LearningRate));
 
-        // ========== Treinamento c/ medicao de tempo ==========
-        var swTreino = Stopwatch.StartNew();
-        _modeloTreinado = pipeline.Fit(dvTreino);
-        swTreino.Stop();
-
-        // ========== Inferencia no conjunto de TESTE ==========
-        var swInf = Stopwatch.StartNew();
-        IDataView predicoesTeste = _modeloTreinado.Transform(dvTeste);
-        var previstos = _ml.Data.CreateEnumerable<MlPrediction>(predicoesTeste, reuseRowObject: false)
-            .Select(p => p.Previsao)
-            .ToList();
-        swInf.Stop();
-        swTotal.Stop();
-
-        var reais = teste.Select(t => t.Label).ToList();
-
-        // ========== Calculo MAE (Mean Absolute Error) ==========
-        double mae = reais.Zip(previstos, (r, p) => Math.Abs(r - p)).Average();
-
-        // Baseline: Media Movel Simples 3 periodos (NAO usa IA -> referencia)
-        var linhaBase = new List<float>();
-        for (int i = 0; i < teste.Count; i++)
+    public TemporalBenchmarkMetrics ExecutarBenchmarkTemporal(
+        List<ConsumoHistorico> historicoCompleto,
+        DateTime corte,
+        int horizonte,
+        FastTreeOptions options)
+    {
+        lock (_modelLock)
         {
-            int globalIdx = split + i;
-            int inicioJanela = Math.Max(0, globalIdx - 3);
-            float media = todasFeatures.Skip(inicioJanela).Take(globalIdx - inicioJanela)
-                                                       .Select(f => f.Label)
-                                                       .DefaultIfEmpty(0)
-                                                       .Average();
-            linhaBase.Add(media);
+            if (horizonte < 1 || horizonte > 12)
+                throw new ArgumentOutOfRangeException(nameof(horizonte), "O horizonte deve ser de 1 a 12 meses.");
+
+            corte = new DateTime(corte.Year, corte.Month, 1);
+            var treino = historicoCompleto
+                .Where(h => h.Data < corte.AddMonths(1))
+                .OrderBy(h => h.Setor)
+                .ThenBy(h => h.Material)
+                .ThenBy(h => h.Data)
+                .ToList();
+            var teste = historicoCompleto
+                .Where(h => h.Data > corte && h.Data <= corte.AddMonths(horizonte))
+                .ToList();
+
+            if (treino.Count == 0)
+                throw new InvalidDataException("Não há dados de treinamento até o mês de corte.");
+
+            var grupos = treino.Select(h => (h.Setor, h.Material)).Distinct().ToHashSet();
+            int pontosEsperados = grupos.Count * horizonte;
+            var datasPrevistas = Enumerable.Range(1, horizonte)
+                .Select(m => corte.AddMonths(m))
+                .ToHashSet();
+            var testeChaves = teste
+                .Select(h => (h.Setor, h.Material, Data: new DateTime(h.Data.Year, h.Data.Month, 1)))
+                .ToList();
+            if (testeChaves.Count != pontosEsperados ||
+                testeChaves.Distinct().Count() != pontosEsperados ||
+                testeChaves.Any(k => !grupos.Contains((k.Setor, k.Material)) || !datasPrevistas.Contains(k.Data)))
+                throw new InvalidDataException(
+                    "O período de teste não tem exatamente um valor para cada material/setor em todos os meses.");
+
+            var features = ConstruirFeatures(treino);
+            IDataView trainingView = _ml.Data.LoadFromEnumerable(features);
+            using var process = Process.GetCurrentProcess();
+            long memoryBefore = process.WorkingSet64;
+            long peakMemory = memoryBefore;
+            object memoryLock = new();
+            using var monitor = new Timer(_ =>
+            {
+                using var sampledProcess = Process.GetCurrentProcess();
+                long workingSet = sampledProcess.WorkingSet64;
+                lock (memoryLock)
+                    peakMemory = Math.Max(peakMemory, workingSet);
+            }, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(20));
+
+            TimeSpan cpuBefore = process.TotalProcessorTime;
+            var trainingTimer = Stopwatch.StartNew();
+            _modeloTreinado = CriarPipeline(options).Fit(trainingView);
+            trainingTimer.Stop();
+
+            var forecastTimer = Stopwatch.StartNew();
+            var forecasts = PreverMesesCore(treino, horizonte);
+            forecastTimer.Stop();
+            TimeSpan cpuElapsed = process.TotalProcessorTime - cpuBefore;
+            monitor.Change(Timeout.Infinite, Timeout.Infinite);
+            lock (memoryLock)
+                peakMemory = Math.Max(peakMemory, process.WorkingSet64);
+
+            var actuals = teste.ToDictionary(
+                h => (h.Setor, h.Material, Data: new DateTime(h.Data.Year, h.Data.Month, 1)),
+                h => (double)h.QuantidadeConsumida);
+            var comparisons = forecasts.Select(f =>
+            {
+                var key = (f.Setor, f.Material, Data: f.Data);
+                return new TemporalBenchmarkPrediction(
+                    f.Data,
+                    f.Setor,
+                    f.Material,
+                    actuals[key],
+                    f.PrevisaoBruta);
+            }).ToList();
+
+            var errors = comparisons.Select(p => p.Previsto - p.Real).ToList();
+            double mae = errors.Average(error => Math.Abs(error));
+            double rmse = Math.Sqrt(errors.Average(error => error * error));
+            double realVolume = comparisons.Sum(p => Math.Abs(p.Real));
+            double? wape = realVolume > 0
+                ? errors.Sum(error => Math.Abs(error)) / realVolume
+                : null;
+            var lastObserved = treino
+                .GroupBy(h => (h.Setor, h.Material))
+                .ToDictionary(
+                    group => group.Key,
+                    group => (double)group.OrderBy(h => h.Data).Last().QuantidadeConsumida);
+            var baselineErrors = comparisons
+                .Select(p => lastObserved[(p.Setor, p.Material)] - p.Real)
+                .ToList();
+            double baselineMae = baselineErrors.Average(error => Math.Abs(error));
+            double baselineRmse = Math.Sqrt(
+                baselineErrors.Average(error => error * error));
+            double? baselineWape = realVolume > 0
+                ? baselineErrors.Sum(error => Math.Abs(error)) / realVolume
+                : null;
+            double baselineTotal = comparisons.Sum(
+                p => lastObserved[(p.Setor, p.Material)]);
+            double baselineMb = memoryBefore / (1024d * 1024d);
+            double peakMb = peakMemory / (1024d * 1024d);
+
+            _colunasTreino = new[]
+            {
+                nameof(MlFeatureRow.Mes), nameof(MlFeatureRow.Ano),
+                nameof(MlFeatureRow.Lag_1), nameof(MlFeatureRow.Lag_2),
+                nameof(MlFeatureRow.Setor), nameof(MlFeatureRow.Material)
+            };
+
+            return new TemporalBenchmarkMetrics(
+                mae,
+                rmse,
+                wape,
+                baselineMae,
+                baselineRmse,
+                baselineWape,
+                baselineTotal,
+                errors.Average(),
+                comparisons.Sum(p => p.Real),
+                comparisons.Sum(p => p.Previsto),
+                errors.Count(error => error > 0),
+                errors.Count(error => error < 0),
+                comparisons.Count,
+                features.Count,
+                trainingTimer.Elapsed.TotalMilliseconds,
+                forecastTimer.Elapsed.TotalMilliseconds,
+                cpuElapsed.TotalMilliseconds,
+                baselineMb,
+                peakMb,
+                Math.Max(0, peakMb - baselineMb),
+                comparisons);
         }
-        double maeBase = reais.Zip(linhaBase, (r, p) => Math.Abs(r - p)).Average();
-
-        // ========== Calculo RMSE (Root Mean Squared Error) ==========
-        double rmse = Math.Sqrt(reais.Zip(previstos, (r, p) => Math.Pow(r - p, 2)).Average());
-        double rmseBase = Math.Sqrt(reais.Zip(linhaBase, (r, p) => Math.Pow(r - p, 2)).Average());
-
-        // Datas do periodo de teste (MM/yyyy) para eixo X do grafico comparativo
-        var datasTeste = teste.Select(t => $"{t.Mes:00}/{t.Ano}").ToList();
-
-        _colunasTreino = new[]
-        {
-            nameof(MlFeatureRow.Mes), nameof(MlFeatureRow.Ano),
-            nameof(MlFeatureRow.Lag_1), nameof(MlFeatureRow.Lag_2),
-            nameof(MlFeatureRow.Setor), nameof(MlFeatureRow.Material)
-        };
-
-        return (new BenchmarkMetrics
-        {
-            Mae = mae,
-            MaeBaseline = maeBase,
-            Rmse = rmse,
-            RmseBaseline = rmseBase,
-            TempoTreinamentoMs = swTreino.ElapsedMilliseconds,
-            TempoInferenciaMs = swInf.ElapsedMilliseconds,
-            LinhasTreino = treino.Count,
-            LinhasTeste = teste.Count,
-            PrevisoesBaselineTeste = linhaBase,
-            DatasTeste = datasTeste
-        }, reais, previstos);
     }
 
-    // -----------------------------------------------------------------
-    // Previsao RECURSIVA para os proximos 3 meses (igual ao forecaster.py)
-    // Para cada mes futuro -> Setor x Material -> calcula Lags -> prediz
-    // -----------------------------------------------------------------
     public List<PrevisaoFutura> PreverProximos3Meses(List<ConsumoHistorico> historico)
+        => PreverProximosMeses(historico, 3);
+
+    public List<PrevisaoFutura> PreverProximosMeses(List<ConsumoHistorico> historico, int horizonte)
+    {
+        lock (_modelLock)
+            return PreverMesesCore(historico, horizonte);
+    }
+
+    private List<PrevisaoFutura> PreverMesesCore(List<ConsumoHistorico> historico, int horizonte)
     {
         if (_modeloTreinado == null)
             throw new InvalidOperationException("Treine o modelo antes de prever.");
-
-        DateTime ultimaData = historico.Max(h => h.Data);
-        var datasFuturas = Enumerable.Range(1, 3)
-            .Select(m => new DateTime(ultimaData.AddMonths(m).Year, ultimaData.AddMonths(m).Month, 1))
-            .ToList();
+        if (horizonte < 1)
+            throw new ArgumentOutOfRangeException(nameof(horizonte));
 
         var combinacoes = historico.Select(h => (h.Setor, h.Material)).Distinct().ToList();
+        var historicoPorGrupo = historico
+            .GroupBy(h => (h.Setor, h.Material))
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(h => h.Data).Select(h => h.QuantidadeConsumida).ToList());
+        var datasFuturas = Enumerable.Range(1, horizonte)
+            .Select(m =>
+            {
+                DateTime date = historico.Max(h => h.Data).AddMonths(m);
+                return new DateTime(date.Year, date.Month, 1);
+            })
+            .ToList();
         var engine = _ml.Model.CreatePredictionEngine<MlFeatureRow, MlPrediction>(_modeloTreinado);
-
         var resultados = new List<PrevisaoFutura>(datasFuturas.Count * combinacoes.Count);
 
         foreach (var data in datasFuturas)
         foreach (var (setor, material) in combinacoes)
         {
-            // Ultimos 2 valores conhecidos do grupo para Lag_1 e Lag_2
-            var serie = historico
-                .Where(h => h.Setor == setor && h.Material == material)
-                .OrderBy(h => h.Data)
-                .ToList();
-
-            float lag1 = serie.Count >= 1 ? serie[^1].QuantidadeConsumida : 0;
-            float lag2 = serie.Count >= 2 ? serie[^2].QuantidadeConsumida : lag1;
-
+            var serie = historicoPorGrupo[(setor, material)];
+            float lag1 = serie[^1];
+            float lag2 = serie.Count > 1 ? serie[^2] : lag1;
             var input = new MlFeatureRow
             {
                 Mes = data.Month,
@@ -218,9 +384,8 @@ public class MlPipelineService
                 Setor = setor,
                 Material = material
             };
-            float pred = engine.Predict(input).Previsao;
-            int previsaoInt = Math.Max(0, (int)Math.Round(pred));
-
+            int previsaoInt = Math.Max(0, (int)Math.Round(engine.Predict(input).Previsao));
+            serie.Add(previsaoInt);
             resultados.Add(new PrevisaoFutura
             {
                 Data = data,
