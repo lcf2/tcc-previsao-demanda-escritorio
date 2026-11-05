@@ -40,17 +40,19 @@ O primeiro início do serviço C# pode restaurar os pacotes NuGet definidos em `
 
 ### Opção recomendada: iniciar os dois
 
-Dê duplo clique em `executar_ambos.bat`. Ele abre:
+Dê duplo clique em `executar_ambos.bat`. Na primeira execução, o arquivo cria o ambiente `.venv` e instala automaticamente as dependências Python de `requirements.txt` (é necessária conexão com a internet). Depois, abre:
 
 - Python — <http://localhost:8501>
 - C# — <http://localhost:5202>
 
+Se o Python ou o .NET não estiverem instalados, o inicializador informa o que está faltando. Para o benchmark integrado, instale os dois requisitos; o dashboard Python sozinho não executa o FastTree.
+
 ### Abrir somente o Python
 
-Na pasta do projeto, ative o ambiente virtual e execute:
+Depois de executar `executar_ambos.bat` ao menos uma vez, ou de instalar as dependências manualmente, use:
 
 ```powershell
-python -m streamlit run main.py --server.port 8501
+.\.venv\Scripts\python.exe -m streamlit run main.py --server.port 8501
 ```
 
 Também é possível abrir <http://localhost:8501>. Se o C# não estiver ativo, o dashboard Python tenta iniciá-lo automaticamente quando você executa o benchmark integrado. O endpoint C# usado na comparação é <http://localhost:5202/api/benchmark>.
