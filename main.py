@@ -129,27 +129,88 @@ def ensure_local_csharp_service(endpoint):
         )
 
 
-# CSS Customizado: Dark Slate Theme
+# CSS para impressão e captura em escala de cinza
 st.markdown("""
     <style>
-    .main { background-color: #0f172a; color: #f8fafc; }
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stHeader"],
+    [data-testid="stMain"] {
+        background-color: #ffffff;
+        color: #111111;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #f5f5f5;
+        border-right: 1px solid #cccccc;
+    }
+    [data-testid="stAppViewContainer"] p,
+    [data-testid="stAppViewContainer"] label,
+    [data-testid="stAppViewContainer"] h1,
+    [data-testid="stAppViewContainer"] h2,
+    [data-testid="stAppViewContainer"] h3,
+    [data-testid="stAppViewContainer"] h4,
+    [data-testid="stAppViewContainer"] h5,
+    [data-testid="stAppViewContainer"] h6,
+    [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] {
+        color: #111111;
+    }
     .stMetric {
-        background-color: #1e293b;
+        background-color: #ffffff;
         padding: 20px;
         border-radius: 12px;
-        border: 1px solid #334155;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        border: 1px solid #b8b8b8;
+        box-shadow: none;
     }
-    div[data-testid="stMetricValue"] { color: #38bdf8; font-weight: 800; }
-    div[data-testid="stMetricLabel"] { color: #94a3b8; }
+    div[data-testid="stMetricValue"] { color: #111111; font-weight: 800; }
+    div[data-testid="stMetricLabel"] { color: #444444; }
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] {
-        height: 50px; background-color: #1e293b; border-radius: 8px 8px 0px 0px;
-        color: #94a3b8; font-weight: 600; padding: 10px 20px;
+        height: 50px; background-color: #f2f2f2; border-radius: 8px 8px 0px 0px;
+        color: #333333; font-weight: 600; padding: 10px 20px;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #1e3a8a !important; color: #38bdf8 !important;
-        border-bottom: 3px solid #38bdf8 !important;
+        background-color: #ffffff !important; color: #111111 !important;
+        border-bottom: 3px solid #333333 !important;
+    }
+    [data-testid="stDataFrame"],
+    [data-testid="stTable"] { background-color: #ffffff; }
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-baseweb="select"] > div,
+    [data-baseweb="select"] input {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border-color: #999999 !important;
+    }
+    [data-testid="stAlert"] {
+        background-color: #f2f2f2;
+        border: 1px solid #bbbbbb;
+    }
+    button[data-testid="stBaseButton-primary"] {
+        background-color: #333333;
+        color: #ffffff;
+        border-color: #333333;
+    }
+    .js-plotly-plot .bg { fill: #ffffff !important; }
+    .js-plotly-plot .gtitle,
+    .js-plotly-plot .xtick text,
+    .js-plotly-plot .ytick text,
+    .js-plotly-plot .legend text {
+        fill: #111111 !important;
+    }
+    .js-plotly-plot .gridlayer path { stroke: #dddddd !important; }
+    @media print {
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stSidebar"] {
+            background: #ffffff !important;
+            color: #000000 !important;
+            print-color-adjust: exact;
+            -webkit-print-color-adjust: exact;
+        }
+        [data-testid="stSidebar"] { border-right: 1px solid #999999; }
+        .stMetric { box-shadow: none !important; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -424,30 +485,44 @@ def main():
                 x=validacao_mensal["Data"],
                 y=validacao_mensal["Real"],
                 name="Real agregado",
-                line=dict(color="#1e3a8a", width=2),
+                line=dict(color="#222222", width=2),
+                mode="lines+markers",
+                marker=dict(symbol="circle"),
             ))
             fig_val.add_trace(go.Scatter(
                 x=validacao_mensal["Data"],
                 y=validacao_mensal["Previsto"],
                 name="Previsto agregado",
-                line=dict(color="#38bdf8", dash="dash"),
+                line=dict(color="#777777", dash="dash"),
+                mode="lines+markers",
+                marker=dict(symbol="x"),
             ))
             fig_val.update_layout(
                 title="Validação temporal recursiva por mês (80/20)",
                 xaxis_title="Mês",
                 yaxis_title="Unidades agregadas",
-                template="plotly_dark",
+                template="plotly_white",
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111111",
             )
-            st.plotly_chart(fig_val, use_container_width=True)
+            st.plotly_chart(fig_val, use_container_width=True, theme=None)
             
             # Gráfico de Projeção Trimestral
             df_portfolio = pd.DataFrame(st.session_state.produtos)
             df_plot = df_future.merge(df_portfolio, on="Material", how="left").fillna("Simulado")
             
             fig_bar = px.bar(df_plot, x='Categoria', y='Previsao_Bruta', color='Subcategoria', 
-                             barmode='group', title="Projeção Trimestral por Segmento", 
-                             template="plotly_dark", hover_data=['Material'])
-            st.plotly_chart(fig_bar, use_container_width=True)
+                             barmode='group', title="Projeção Trimestral por Segmento",
+                             color_discrete_sequence=["#222222", "#555555", "#888888", "#bbbbbb"],
+                             template="plotly_white", hover_data=['Material'])
+            fig_bar.update_layout(
+                template="plotly_white",
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111111",
+            )
+            st.plotly_chart(fig_bar, use_container_width=True, theme=None)
 
         with tab2:
             st.subheader("Relatório de Adequação Ergonômica (NR-17)")
@@ -571,7 +646,7 @@ def main():
                 grafico_historico = go.Figure(go.Bar(
                     x=resumo_mensal["Data"].dt.strftime("%m/%Y"),
                     y=resumo_mensal["Consumo_Importado"],
-                    marker_color="#38bdf8",
+                    marker_color="#555555",
                     name="Consumo agregado",
                     hovertemplate="%{x}<br>Consumo: %{y:,.0f}<extra></extra>",
                 ))
@@ -581,11 +656,16 @@ def main():
                     yaxis_title="Unidades",
                     showlegend=False,
                     margin=dict(t=55, b=35),
+                    template="plotly_white",
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#ffffff",
+                    font_color="#111111",
                 )
                 st.plotly_chart(
                     grafico_historico,
                     use_container_width=True,
                     config={"displayModeBar": False},
+                    theme=None,
                 )
             if not modo_captura:
                 st.info(
@@ -863,7 +943,7 @@ def main():
                         name="Random Forest",
                         x=["MAE ↓", "RMSE ↓"],
                         y=[rf["mae"], rf["rmse"]],
-                        marker_color="#38bdf8",
+                        marker_color="#777777",
                         text=[f"{rf['mae']:.2f}", f"{rf['rmse']:.2f}"],
                         textposition="outside",
                     ))
@@ -871,7 +951,7 @@ def main():
                         name="FastTree",
                         x=["MAE ↓", "RMSE ↓"],
                         y=[ft["mae"], ft["rmse"]],
-                        marker_color="#f97316",
+                        marker_color="#333333",
                         text=[f"{ft['mae']:.2f}", f"{ft['rmse']:.2f}"],
                         textposition="outside",
                     ))
@@ -879,7 +959,7 @@ def main():
                         name="Baseline (último mês)",
                         x=["MAE ↓", "RMSE ↓"],
                         y=[rf["baseline_mae"], rf["baseline_rmse"]],
-                        marker_color="#94a3b8",
+                        marker_color="#bbbbbb",
                         text=[
                             f"{rf['baseline_mae']:.2f}",
                             f"{rf['baseline_rmse']:.2f}",
@@ -893,16 +973,20 @@ def main():
                         legend_title="Modelo",
                         height=280,
                         margin=dict(t=55, b=35),
+                        template="plotly_white",
+                        paper_bgcolor="#ffffff",
+                        plot_bgcolor="#ffffff",
+                        font_color="#111111",
                     )
                     totais_figura = go.Figure()
                     for nome, coluna, cor in (
-                        ("Consumo real", "Real", "#94a3b8"),
-                        ("Random Forest", "Random Forest", "#38bdf8"),
-                        ("FastTree", "FastTree", "#f97316"),
+                        ("Consumo real", "Real", "#222222"),
+                        ("Random Forest", "Random Forest", "#777777"),
+                        ("FastTree", "FastTree", "#444444"),
                         (
                             "Baseline (último mês)",
                             "Baseline",
-                            "#cbd5e1",
+                            "#bbbbbb",
                         ),
                     ):
                         totais_figura.add_trace(go.Bar(
@@ -920,17 +1004,23 @@ def main():
                         yaxis_title="Unidades",
                         legend_title="Série",
                         margin=dict(t=55, b=35),
+                        template="plotly_white",
+                        paper_bgcolor="#ffffff",
+                        plot_bgcolor="#ffffff",
+                        font_color="#111111",
                     )
                     st.plotly_chart(
                         metricas_figura,
                         use_container_width=True,
                         config={"displayModeBar": False},
+                        theme=None,
                     )
                     if not modo_captura:
                         st.plotly_chart(
                             totais_figura,
                             use_container_width=True,
                             config={"displayModeBar": False},
+                            theme=None,
                         )
 
                     if not modo_captura:

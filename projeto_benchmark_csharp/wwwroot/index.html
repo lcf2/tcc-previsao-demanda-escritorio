@@ -8,26 +8,71 @@
     <link href="/lib/bootstrap.min.css" rel="stylesheet">
     <script src="/lib/chart.umd.min.js"></script>
     <style>
-        :root { --bs-primary: #10b981; --bs-primary-rgb: 16,185,129; }
-        body { background:#0f172a; color:#f8fafc; font-family:'Segoe UI', sans-serif; }
-        .card-metric {
-            background: linear-gradient(145deg,#1e293b,#0f172a);
-            border:1px solid #334155; border-radius:14px;
-            box-shadow: 0 8px 24px rgba(0,0,0,.35);
+        :root {
+            --bs-primary: #333333; --bs-primary-rgb: 51,51,51;
+            --bs-success: #333333; --bs-success-rgb: 51,51,51;
+            --bs-info: #555555; --bs-info-rgb: 85,85,85;
+            --bs-warning: #666666; --bs-warning-rgb: 102,102,102;
         }
-        .metric-value { font-size:2rem; font-weight:800; color:#10b981; }
-        .metric-label { font-size:.85rem; color:#94a3b8; text-transform:uppercase; letter-spacing:.4px; }
+        body { background:#ffffff; color:#111111; font-family:'Segoe UI', sans-serif; }
+        .card-metric {
+            background:#ffffff;
+            border:1px solid #b8b8b8; border-radius:10px;
+            box-shadow:none;
+        }
+        .metric-value { font-size:2rem; font-weight:800; color:#111111; }
+        .metric-label { font-size:.85rem; color:#444444; text-transform:uppercase; letter-spacing:.4px; }
         .sidebar {
-            background:#1e293b; border-right:1px solid #334155;
+            background:#f5f5f5; border-right:1px solid #cccccc;
             min-height:100vh; padding:20px 14px;
             position:sticky; top:0;
         }
-        .nav-tabs .nav-link { color:#94a3b8; border-radius:8px 8px 0 0; }
-        .nav-tabs .nav-link.active { background:#334155!important; color:#10b981!important; border-bottom:3px solid #10b981; }
+        .nav-tabs .nav-link { color:#333333; border-radius:8px 8px 0 0; }
+        .nav-tabs .nav-link.active { background:#ffffff!important; color:#111111!important; border-bottom:3px solid #333333; }
         .badge-pill { border-radius:999px; padding:6px 12px; font-weight:600; }
-        .table-dark { --bs-table-bg:#1e293b; --bs-table-border-color:#334155; }
-        .logo-unip { filter:brightness(1.2) invert(0); }
-        .range-slider::-webkit-slider-thumb { background:#10b981; }
+        .table-dark {
+            --bs-table-color:#111111;
+            --bs-table-bg:#ffffff;
+            --bs-table-border-color:#cccccc;
+            --bs-table-striped-bg:#f2f2f2;
+            --bs-table-striped-color:#111111;
+            --bs-table-hover-bg:#eeeeee;
+            --bs-table-hover-color:#111111;
+        }
+        .text-light, .text-success, .text-info, .text-primary, .text-warning {
+            color:#222222!important;
+        }
+        .text-muted { color:#555555!important; }
+        .bg-dark, .form-control.bg-dark, .form-select.bg-dark {
+            color:#111111!important;
+            background-color:#ffffff!important;
+        }
+        .bg-primary, .badge.bg-primary {
+            color:#111111!important;
+            background-color:#dddddd!important;
+            border:1px solid #777777;
+        }
+        .border-secondary { border-color:#999999!important; }
+        .btn-success {
+            --bs-btn-color:#ffffff;
+            --bs-btn-bg:#333333;
+            --bs-btn-border-color:#333333;
+            --bs-btn-hover-bg:#111111;
+            --bs-btn-hover-border-color:#111111;
+        }
+        .btn-outline-success {
+            --bs-btn-color:#222222;
+            --bs-btn-border-color:#555555;
+            --bs-btn-hover-bg:#333333;
+            --bs-btn-hover-border-color:#333333;
+        }
+        .range-slider::-webkit-slider-thumb { background:#444444; }
+        @media print {
+            body, .sidebar, .card, .card-metric, main { background:#ffffff!important; color:#000000!important; }
+            .sidebar { position:static; min-height:0; border-right:1px solid #999999; }
+            .card-metric { box-shadow:none!important; break-inside:avoid; }
+            .btn, input, select { display:none!important; }
+        }
     </style>
 </head>
 <body>
@@ -437,24 +482,25 @@ async function carregarDashboard() {
             data: {
                 labels: todosLabels,
                 datasets: [
-                    { label:'Consumo Real (Histórico)', data:histData, borderColor:'#334155',
-                      backgroundColor:'rgba(51,65,85,.2)', tension:.25, borderWidth:3,
-                      pointBackgroundColor:'#334155', pointRadius:4, spanGaps:false },
-                    { label:'FastTree (IA) C#', data:prevData, borderColor:'#10b981',
-                      backgroundColor:'rgba(16,185,129,.15)', borderDash:[6,4], tension:.3,
-                      borderWidth:3, pointRadius:5, pointBackgroundColor:'#10b981' },
-                    { label:'Baseline (último consumo observado)', data:baseData, borderColor:'#f97316',
-                      backgroundColor:'rgba(249,115,22,.10)', borderDash:[3,3], tension:.25,
-                      borderWidth:2, pointRadius:3, pointBackgroundColor:'#f97316', spanGaps:false },
+                    { label:'Consumo Real (Histórico)', data:histData, borderColor:'#222222',
+                      backgroundColor:'rgba(34,34,34,.12)', tension:.25, borderWidth:3,
+                      pointBackgroundColor:'#222222', pointStyle:'circle', pointRadius:4, spanGaps:false },
+                    { label:'FastTree (IA) C#', data:prevData, borderColor:'#666666',
+                      backgroundColor:'rgba(102,102,102,.10)', borderDash:[6,4], tension:.3,
+                      borderWidth:3, pointRadius:5, pointStyle:'rectRot', pointBackgroundColor:'#666666' },
+                    { label:'Baseline (último consumo observado)', data:baseData, borderColor:'#999999',
+                      backgroundColor:'rgba(153,153,153,.08)', borderDash:[3,3], tension:.25,
+                      borderWidth:2, pointRadius:3, pointStyle:'triangle', pointBackgroundColor:'#999999', spanGaps:false },
                     { label:'Itens Especiais Inclusivos', data:espData, type:'bar',
-                      backgroundColor:'rgba(251,191,36,.7)', borderRadius:4, order:2 }
+                      backgroundColor:'rgba(180,180,180,.75)', borderColor:'#666666', borderWidth:1,
+                      borderRadius:4, order:2 }
                 ]
             },
-            options: { responsive:true, plugins:{ legend:{ labels:{ color:'#cbd5e1' } } },
+            options: { responsive:true, plugins:{ legend:{ labels:{ color:'#222222' } } },
                        scales: {
-                         x:{ ticks:{ color:'#94a3b8' }, grid:{ color:'rgba(148,163,184,.08)' } },
-                         y:{ ticks:{ color:'#94a3b8' }, grid:{ color:'rgba(148,163,184,.08)' },
-                             beginAtZero:true, title:{ display:true, text:'Unidades Consumidas', color:'#94a3b8' } } } }
+                         x:{ ticks:{ color:'#333333' }, grid:{ color:'rgba(0,0,0,.08)' } },
+                         y:{ ticks:{ color:'#333333' }, grid:{ color:'rgba(0,0,0,.08)' },
+                             beginAtZero:true, title:{ display:true, text:'Unidades Consumidas', color:'#222222' } } } }
         });
 
         // === Sumário Mensal ===
@@ -501,15 +547,15 @@ async function carregarDashboard() {
         const perfilRh = data.perfilRh ?? data.PerfilRh ?? [];
         const rhLabels = perfilRh.map(r => r.restricao ?? r.Restricao);
         const rhValues = perfilRh.map(r => r.quantidade ?? r.Quantidade);
-        const coresSafe = ['#10b981','#38bdf8','#f59e0b','#ef4444','#a855f7','#ec4899','#06b6d4','#f97316'];
+        const coresSafe = ['#222222','#555555','#888888','#bbbbbb','#444444','#777777','#999999','#dddddd'];
         if (chartRh) chartRh.destroy();
         chartRh = new Chart(document.getElementById('chartRh'), {
             type: 'doughnut',
             data: { labels: rhLabels,
                     datasets: [{ data: rhValues,
                                  backgroundColor: coresSafe.slice(0, rhLabels.length),
-                                 borderColor:'#0f172a', borderWidth:2 }] },
-            options: { plugins:{ legend:{ position:'right', labels:{ color:'#cbd5e1', font:{size:11}}}}}
+                                 borderColor:'#ffffff', borderWidth:2 }] },
+            options: { plugins:{ legend:{ position:'right', labels:{ color:'#222222', font:{size:11}}}}}
         });
 
     } catch (e) {

@@ -20,47 +20,98 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização customizada para o tema Dark/Slate moderno
+# Estilização clara para captura e impressão
 st.markdown("""
     <style>
-    /* Estilo do fundo e textos gerais */
-    .main {
-        background-color: #0f172a;
-        color: #f8fafc;
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stHeader"],
+    [data-testid="stMain"] {
+        background-color: #ffffff;
+        color: #111111;
     }
-    /* Estilização dos Cards de Métricas */
+    [data-testid="stSidebar"] {
+        background-color: #f5f5f5;
+        border-right: 1px solid #cccccc;
+    }
+    [data-testid="stAppViewContainer"] p,
+    [data-testid="stAppViewContainer"] label,
+    [data-testid="stAppViewContainer"] h1,
+    [data-testid="stAppViewContainer"] h2,
+    [data-testid="stAppViewContainer"] h3,
+    [data-testid="stAppViewContainer"] h4,
+    [data-testid="stAppViewContainer"] h5,
+    [data-testid="stAppViewContainer"] h6,
+    [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] {
+        color: #111111;
+    }
     div[data-testid="stMetricValue"] {
         font-size: 2.2rem;
         font-weight: 700;
-        color: #10b981;
+        color: #111111;
     }
     div[data-testid="stMetricLabel"] {
         font-size: 1rem;
-        color: #94a3b8;
+        color: #444444;
     }
     .stMetric {
-        background-color: #1e293b;
+        background-color: #ffffff;
         padding: 20px;
         border-radius: 12px;
-        border: 1px solid #334155;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border: 1px solid #b8b8b8;
+        box-shadow: none;
     }
-    /* Abas customizadas */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
     .stTabs [data-baseweb="tab"] {
         height: 50px;
-        background-color: #1e293b;
+        background-color: #f2f2f2;
         border-radius: 8px 8px 0px 0px;
-        color: #94a3b8;
+        color: #333333;
         padding: 10px 20px;
         font-weight: 600;
     }
     .stTabs [aria-selected="true"] {
-        background-color: #334155 !important;
-        color: #10b981 !important;
-        border-bottom: 3px solid #10b981 !important;
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border-bottom: 3px solid #333333 !important;
+    }
+    [data-baseweb="select"] > div,
+    [data-baseweb="select"] input {
+        background-color: #ffffff !important;
+        color: #111111 !important;
+        border-color: #999999 !important;
+    }
+    [data-testid="stAlert"] {
+        background-color: #f2f2f2;
+        border: 1px solid #bbbbbb;
+    }
+    button[data-testid="stBaseButton-primary"] {
+        background-color: #333333;
+        color: #ffffff;
+        border-color: #333333;
+    }
+    .js-plotly-plot .bg { fill: #ffffff !important; }
+    .js-plotly-plot .gtitle,
+    .js-plotly-plot .xtick text,
+    .js-plotly-plot .ytick text,
+    .js-plotly-plot .legend text {
+        fill: #111111 !important;
+    }
+    .js-plotly-plot .gridlayer path { stroke: #dddddd !important; }
+    @media print {
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stSidebar"] {
+            background: #ffffff !important;
+            color: #000000 !important;
+            print-color-adjust: exact;
+            -webkit-print-color-adjust: exact;
+        }
+        [data-testid="stSidebar"] { border-right: 1px solid #999999; }
+        .stMetric { box-shadow: none !important; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -282,31 +333,33 @@ def main():
             # Gráfico Plotly: Histórico vs Previsão
             fig = go.Figure()
             
-            # Linha Histórica (Azul Escuro/Slate)
+            # Linha histórica sólida e previsão tracejada para diferenciar na impressão.
             fig.add_trace(go.Scatter(
                 x=df_hist_plot['Data'], y=df_hist_plot['Quantidade'],
-                name='Consumo Real', line=dict(color='#334155', width=3)
+                name='Consumo Real', line=dict(color='#222222', width=3),
+                mode="lines+markers", marker=dict(symbol="circle")
             ))
             
-            # Linha de Previsão (Verde Pontilhada)
             # Conectar o último ponto real ao primeiro previsto
             full_dates = [df_hist_plot['Data'].iloc[-1]] + list(df_pred['Data'])
             full_preds = [df_hist_plot['Quantidade'].iloc[-1]] + list(df_pred['Previsao'])
             
             fig.add_trace(go.Scatter(
                 x=full_dates, y=full_preds,
-                name='Previsão (IA)', line=dict(color='#10b981', width=3, dash='dot')
+                name='Previsão (IA)', line=dict(color='#777777', width=3, dash='dot'),
+                mode="lines+markers", marker=dict(symbol="x")
             ))
             
             fig.update_layout(
-                template="plotly_dark",
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
+                template="plotly_white",
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111111",
                 xaxis_title="Meses",
                 yaxis_title="Quantidade",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, theme=None)
             
             st.write("#### Detalhamento da Previsão")
             st.table(df_pred.assign(Data=df_pred['Data'].dt.strftime('%m/%Y')))
@@ -324,10 +377,15 @@ def main():
                     names=restricoes_counts.index,
                     title="Perfil de Restrições na Planta",
                     hole=0.4,
-                    color_discrete_sequence=px.colors.qualitative.Safe
+                    color_discrete_sequence=["#222222", "#555555", "#888888", "#bbbbbb"]
                 )
-                fig_pcd.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_pcd, use_container_width=True)
+                fig_pcd.update_layout(
+                    template="plotly_white",
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#ffffff",
+                    font_color="#111111",
+                )
+                st.plotly_chart(fig_pcd, use_container_width=True, theme=None)
             
             with c2:
                 st.info("💡 **Relatório de Compras Customizado:** O sistema ajusta o volume bruto previsto para atender necessidades específicas, reduzindo desperdício de pares completos.")
