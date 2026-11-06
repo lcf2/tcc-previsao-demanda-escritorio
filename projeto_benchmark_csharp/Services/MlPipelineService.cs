@@ -138,19 +138,29 @@ public class MlPipelineService
         // ========== Calculo MAE (Mean Absolute Error) ==========
         double mae = reais.Zip(previstos, (r, p) => Math.Abs(r - p)).Average();
 
-        // Baseline de um passo: último consumo observado da mesma série.
-        var linhaBase = teste.Select(row => row.Lag_1).ToList();
-        double maeBase = reais.Zip(linhaBase, (r, p) => Math.Abs(r - p)).Average();
+        var observacoesPorAnoMes = treino.ToDictionary(
+            row => ((int)row.Ano, (int)row.Mes, row.Setor, row.Material),
+            row => row.Label);
+        var previsoesSazonaisManuais = teste.Select(row =>
+        {
+            int anoAnterior = (int)row.Ano - 1;
+            var chave = (anoAnterior, (int)row.Mes, row.Setor, row.Material);
+            return observacoesPorAnoMes.TryGetValue(chave, out float quantidade)
+                ? quantidade
+                : 0f;
+        }).ToList();
+        double maeSazonalManual = reais.Zip(
+            previsoesSazonaisManuais,
+            (real, previsto) => Math.Abs(real - previsto)).Average();
 
         // ========== Calculo RMSE (Root Mean Squared Error) ==========
         double rmse = Math.Sqrt(reais.Zip(previstos, (r, p) => Math.Pow(r - p, 2)).Average());
-        double rmseBase = Math.Sqrt(reais.Zip(linhaBase, (r, p) => Math.Pow(r - p, 2)).Average());
+        double rmseSazonalManual = Math.Sqrt(reais.Zip(
+            previsoesSazonaisManuais,
+            (real, previsto) => Math.Pow(real - previsto, 2)).Average());
 
         // Datas do periodo de teste (MM/yyyy) para eixo X do grafico comparativo
-        var datasTeste = teste
-            .Select(t => $"{t.Mes:00}/{t.Ano}")
-            .Distinct()
-            .ToList();
+        var datasTeste = teste.Select(t => $"{t.Mes:00}/{t.Ano}").ToList();
 
         // Keep holdout metrics from the temporal split, but use all available
         // history for the operational forecast produced after this evaluation.
@@ -169,14 +179,14 @@ public class MlPipelineService
         return (new BenchmarkMetrics
         {
             Mae = mae,
-            MaeBaseline = maeBase,
+            MaeSazonalManual = maeSazonalManual,
             Rmse = rmse,
-            RmseBaseline = rmseBase,
+            RmseSazonalManual = rmseSazonalManual,
             TempoTreinamentoMs = swTreino.ElapsedMilliseconds + swTreinoCompleto.ElapsedMilliseconds,
             TempoInferenciaMs = swInf.ElapsedMilliseconds,
             LinhasTreino = treino.Count,
             LinhasTeste = teste.Count,
-            PrevisoesBaselineTeste = linhaBase,
+            PrevisoesSazonalManualTeste = previsoesSazonaisManuais,
             DatasTeste = datasTeste
         }, reais, previstos);
     }
@@ -286,23 +296,26 @@ public class MlPipelineService
             double? wape = realVolume > 0
                 ? errors.Sum(error => Math.Abs(error)) / realVolume
                 : null;
-            var lastObserved = treino
-                .GroupBy(h => (h.Setor, h.Material))
-                .ToDictionary(
-                    group => group.Key,
-                    group => (double)group.OrderBy(h => h.Data).Last().QuantidadeConsumida);
-            var baselineErrors = comparisons
-                .Select(p => lastObserved[(p.Setor, p.Material)] - p.Real)
-                .ToList();
-            double baselineMae = baselineErrors.Average(error => Math.Abs(error));
-            double baselineRmse = Math.Sqrt(
-                baselineErrors.Average(error => error * error));
-            double? baselineWape = realVolume > 0
-                ? baselineErrors.Sum(error => Math.Abs(error)) / realVolume
+            var observedValues = treino.ToDictionary(
+                row => (new DateTime(row.Data.Year, row.Data.Month, 1), row.Setor, row.Material),
+                row => (double)row.QuantidadeConsumida);
+            var seasonalErrors = comparisons.Select(prediction =>
+            {
+                var previousYearKey = (
+                    prediction.Data.AddYears(-1),
+                    prediction.Setor,
+                    prediction.Material);
+                double previousYearValue = observedValues.GetValueOrDefault(previousYearKey);
+                return (Error: previousYearValue - prediction.Real, Forecast: previousYearValue);
+            }).ToList();
+            double maeSazonalManual = seasonalErrors.Average(item => Math.Abs(item.Error));
+            double rmseSazonalManual = Math.Sqrt(
+                seasonalErrors.Average(item => item.Error * item.Error));
+            double? wapeSazonalManual = realVolume > 0
+                ? seasonalErrors.Sum(item => Math.Abs(item.Error)) / realVolume
                 : null;
-            double baselineTotal = comparisons.Sum(
-                p => lastObserved[(p.Setor, p.Material)]);
-            double baselineMb = memoryBefore / (1024d * 1024d);
+            double totalSazonalManual = seasonalErrors.Sum(item => item.Forecast);
+            double memoryBeforeMb = memoryBefore / (1024d * 1024d);
             double peakMb = peakMemory / (1024d * 1024d);
 
             _colunasTreino = new[]
@@ -316,10 +329,10 @@ public class MlPipelineService
                 mae,
                 rmse,
                 wape,
-                baselineMae,
-                baselineRmse,
-                baselineWape,
-                baselineTotal,
+                maeSazonalManual,
+                rmseSazonalManual,
+                wapeSazonalManual,
+                totalSazonalManual,
                 errors.Average(),
                 comparisons.Sum(p => p.Real),
                 comparisons.Sum(p => p.Previsto),
@@ -330,9 +343,9 @@ public class MlPipelineService
                 trainingTimer.Elapsed.TotalMilliseconds,
                 forecastTimer.Elapsed.TotalMilliseconds,
                 cpuElapsed.TotalMilliseconds,
-                baselineMb,
+                memoryBeforeMb,
                 peakMb,
-                Math.Max(0, peakMb - baselineMb),
+                Math.Max(0, peakMb - memoryBeforeMb),
                 comparisons);
         }
     }

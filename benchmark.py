@@ -54,7 +54,7 @@ def _measure_peak_working_set(stop_event, samples):
 def run_random_forest_benchmark(
     history,
     cutoff,
-    horizon=3,
+    horizon=12,
     n_estimators=100,
     max_depth=10,
 ):
@@ -129,13 +129,21 @@ def run_random_forest_benchmark(
 
         forecast_start = time.perf_counter()
         generated = []
+        manual_generated = []
         rolling_values = {
             key: group.sort_values("Data")["Quantidade_Consumida"].astype(float).tolist()
             for key, group in training.groupby(series_keys, sort=True)
         }
-        baseline_values = {key: values[-1] for key, values in rolling_values.items()}
+        manual_values = {
+            key: {
+                row.Data: float(row.Quantidade_Consumida)
+                for row in group.sort_values("Data").itertuples(index=False)
+            }
+            for key, group in training.groupby(series_keys, sort=True)
+        }
         for date in forecast_dates:
             rows = []
+            manual_rows = []
             for (sector, material), values in rolling_values.items():
                 lag_1 = values[-1]
                 lag_2 = values[-2] if len(values) > 1 else lag_1
@@ -147,6 +155,14 @@ def run_random_forest_benchmark(
                     "Material": material,
                     "Lag_1": lag_1,
                     "Lag_2": lag_2,
+                })
+                previous_year = date - pd.DateOffset(years=1)
+                previous_value = manual_values[(sector, material)].get(previous_year, 0.0)
+                manual_rows.append({
+                    "Data": date,
+                    "Setor": sector,
+                    "Material": material,
+                    "Sazonal_Manual": previous_value,
                 })
 
             future_features = pd.DataFrame(rows)
@@ -164,6 +180,11 @@ def run_random_forest_benchmark(
                     "Material": row["Material"],
                     "Previsao": quantity,
                 })
+            for row in manual_rows:
+                manual_values[(row["Setor"], row["Material"])][row["Data"]] = (
+                    row["Sazonal_Manual"]
+                )
+                manual_generated.append(row)
         forecast_seconds = time.perf_counter() - forecast_start
     finally:
         stop_event.set()
@@ -175,16 +196,18 @@ def run_random_forest_benchmark(
         on=["Data", "Setor", "Material"],
         validate="one_to_one",
     )
-    comparison["Baseline"] = [
-        baseline_values[(row.Setor, row.Material)]
-        for row in comparison.itertuples(index=False)
-    ]
+    manual_predictions = pd.DataFrame(manual_generated)
+    comparison = comparison.merge(
+        manual_predictions,
+        on=["Data", "Setor", "Material"],
+        validate="one_to_one",
+    )
     errors = comparison["Previsao"] - comparison["Quantidade_Consumida"]
-    baseline_errors = comparison["Baseline"] - comparison["Quantidade_Consumida"]
+    manual_errors = comparison["Sazonal_Manual"] - comparison["Quantidade_Consumida"]
     real_volume = float(comparison["Quantidade_Consumida"].abs().sum())
     wape = float(errors.abs().sum() / real_volume) if real_volume else None
-    baseline_wape = (
-        float(baseline_errors.abs().sum() / real_volume) if real_volume else None
+    manual_wape = (
+        float(manual_errors.abs().sum() / real_volume) if real_volume else None
     )
     peak_working_set = max(samples)
 
@@ -193,14 +216,14 @@ def run_random_forest_benchmark(
         "mae": float(mean_absolute_error(comparison["Quantidade_Consumida"], comparison["Previsao"])),
         "rmse": float(np.sqrt(mean_squared_error(comparison["Quantidade_Consumida"], comparison["Previsao"]))),
         "wape": wape,
-        "baseline_mae": float(mean_absolute_error(
-            comparison["Quantidade_Consumida"], comparison["Baseline"]
+        "manual_mae": float(mean_absolute_error(
+            comparison["Quantidade_Consumida"], comparison["Sazonal_Manual"]
         )),
-        "baseline_rmse": float(np.sqrt(mean_squared_error(
-            comparison["Quantidade_Consumida"], comparison["Baseline"]
+        "manual_rmse": float(np.sqrt(mean_squared_error(
+            comparison["Quantidade_Consumida"], comparison["Sazonal_Manual"]
         ))),
-        "baseline_wape": baseline_wape,
-        "baseline_total_previsto": float(comparison["Baseline"].sum()),
+        "manual_wape": manual_wape,
+        "manual_total_previsto": float(comparison["Sazonal_Manual"].sum()),
         "vies": float(errors.mean()),
         "total_real": float(comparison["Quantidade_Consumida"].sum()),
         "total_previsto": float(comparison["Previsao"].sum()),

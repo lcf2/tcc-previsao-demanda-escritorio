@@ -18,6 +18,7 @@ projeto_benchmark_csharp/publish/
 projeto_benchmark_csharp/_boot_and_test.ps1
 
 # Local data files (may contain confidential records)
+dados_privados/
 *.xlsx
 *.xls
 *.xlsm

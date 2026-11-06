@@ -8,9 +8,9 @@ namespace TccBenchmark.Models;
 public class BenchmarkMetrics
 {
     public double Mae { get; set; }
-    public double MaeBaseline { get; set; }
+    public double MaeSazonalManual { get; set; }
     public double Rmse { get; set; }
-    public double RmseBaseline { get; set; }
+    public double RmseSazonalManual { get; set; }
     public long TempoTreinamentoMs { get; set; }
     public long TempoInferenciaMs { get; set; }
     public int LinhasTreino { get; set; }
@@ -18,6 +18,6 @@ public class BenchmarkMetrics
     public int TotalColaboradores { get; set; }
     public int TotalPCDs { get; set; }
     public int TotalPrevisoesFuturas { get; set; }
-    public List<float> PrevisoesBaselineTeste { get; set; } = new();
+    public List<float> PrevisoesSazonalManualTeste { get; set; } = new();
     public List<string> DatasTeste { get; set; } = new();
 }

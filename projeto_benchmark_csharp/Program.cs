@@ -61,6 +61,37 @@ var historicoGlobal = geradorGlobal.GerarHistoricoConsumo(meses: 24);
 var rhGlobal        = geradorGlobal.GerarCadastroRH(totalColabs: 200, taxaPcdEpi: 0.08);
 var dadosSync = new object();
 var origemDadosReal = false;
+var origemDadosDescricao = "Sintéticos (seed 42)";
+var movimentosSapClassificados = false;
+var workbookLocal = Path.Combine(
+    Directory.GetParent(builder.Environment.ContentRootPath)?.FullName
+        ?? builder.Environment.ContentRootPath,
+    "dados_privados",
+    "base_real.xlsx");
+if (File.Exists(workbookLocal))
+{
+    var importer = app.Services.GetRequiredService<ExcelConsumptionImporter>();
+    using var stream = File.OpenRead(workbookLocal);
+    var resultadoImportacao = importer.Import(stream);
+    historicoGlobal = resultadoImportacao.Historico;
+    origemDadosReal = true;
+    movimentosSapClassificados = resultadoImportacao.MovimentosSapClassificados;
+    origemDadosDescricao = string.Equals(
+        resultadoImportacao.AbaDeOrigem,
+        "MB51",
+        StringComparison.OrdinalIgnoreCase)
+        ? "Real - MB51 detalhada"
+        : string.Equals(
+            resultadoImportacao.AbaDeOrigem,
+            "Planilha2",
+            StringComparison.OrdinalIgnoreCase)
+            ? "Real - movimentações SAP"
+        : "Real - tabela Excel";
+    app.Logger.LogInformation(
+        "Base Excel local carregada: {Registros} registros, {Materiais} materiais.",
+        historicoGlobal.Count,
+        historicoGlobal.Select(row => row.Material).Distinct().Count());
+}
 
 // ============================================================
 // 3) PIPELINE DE MIDDLEWARE
@@ -79,10 +110,14 @@ app.MapGet("/api/meta", () =>
 {
     List<ConsumoHistorico> historicoAtual;
     bool dadosReais;
+    string origemAtual;
+    bool movimentosClassificados;
     lock (dadosSync)
     {
         historicoAtual = historicoGlobal;
         dadosReais = origemDadosReal;
+        origemAtual = origemDadosDescricao;
+        movimentosClassificados = movimentosSapClassificados;
     }
 
     List<Colaborador> colaboradores = dadosReais ? [] : rhGlobal;
@@ -94,7 +129,8 @@ app.MapGet("/api/meta", () =>
         TotalPcds = colaboradores.Count(c => c.PCD),
         TotalRestricoes = colaboradores.Count(c => c.RestricaoErgonomica != "Nenhuma"),
         DadosReais = dadosReais,
-        Origem = dadosReais ? "Real - MB51 detalhada" : "Sintéticos (seed 42)"
+        Origem = origemAtual,
+        MovimentosSapClassificados = movimentosClassificados
     };
 });
 
@@ -119,6 +155,18 @@ app.MapPost("/api/upload", async (HttpRequest request, ExcelConsumptionImporter 
         {
             historicoGlobal = resultadoImportacao.Historico;
             origemDadosReal = true;
+            movimentosSapClassificados = resultadoImportacao.MovimentosSapClassificados;
+            origemDadosDescricao = string.Equals(
+                resultadoImportacao.AbaDeOrigem,
+                "MB51",
+                StringComparison.OrdinalIgnoreCase)
+                ? "Real - MB51 detalhada"
+                : string.Equals(
+                    resultadoImportacao.AbaDeOrigem,
+                    "Planilha2",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "Real - movimentações SAP"
+                : "Real - tabela Excel";
         }
 
         return Results.Ok(new
@@ -129,6 +177,7 @@ app.MapPost("/api/upload", async (HttpRequest request, ExcelConsumptionImporter 
             subtotaisIgnorados = resultadoImportacao.LinhasDeSubtotalIgnoradas,
             agrupamentosConferidos = resultadoImportacao.AgrupamentosConferidos,
             divergenciasComPlanilha9 = resultadoImportacao.DivergenciasComPlanilha9,
+            movimentosSapClassificados = resultadoImportacao.MovimentosSapClassificados,
             registros = resultadoImportacao.Historico.Count,
             materiais = resultadoImportacao.Historico.Select(h => h.Material).Distinct().Count(),
             inicio = resultadoImportacao.Historico.Min(h => h.Data).ToString("MM/yyyy"),
@@ -190,10 +239,10 @@ app.MapPost("/api/benchmark", (
             result.Mae,
             result.Rmse,
             result.Wape,
-            result.BaselineMae,
-            result.BaselineRmse,
-            result.BaselineWape,
-            result.BaselineTotalPrevisto,
+            result.MaeSazonalManual,
+            result.RmseSazonalManual,
+            result.WapeSazonalManual,
+            result.TotalSazonalManual,
             result.Vies,
             result.TotalReal,
             result.TotalPrevisto,
@@ -272,8 +321,8 @@ app.MapGet("/api/dashboard", (
 
     metricas.TotalPrevisoesFuturas = planoCompras.Count;
     int totalAdaptados = planoCompras.Sum(p => p.QuantidadeEspecial);
-    double ganho = metricas.MaeBaseline > 0
-        ? (metricas.MaeBaseline - metricas.Mae) / metricas.MaeBaseline * 100.0
+    double ganho = metricas.MaeSazonalManual > 0
+        ? (metricas.MaeSazonalManual - metricas.Mae) / metricas.MaeSazonalManual * 100.0
         : 0;
 
     // --- Historico AGREGADO por mes do EPI selecionado ---
@@ -346,10 +395,11 @@ app.MapGet("/api/dashboard", (
         .Select(g => new { Restricao = g.Key, Quantidade = g.Count() })
         .ToList();
 
-    // --- Dados para o grafico ---
-    // Serie do baseline de ultimo consumo observado no periodo de teste.
-    var serieBaseline = metricas.DatasTeste
-        .Zip(metricas.PrevisoesBaselineTeste, (d, v) => new { Data = d, Quantidade = (int)Math.Round(v) })
+    // --- Previsão sazonal manual agregada por mês no período de teste ---
+    var serieSazonalManual = metricas.DatasTeste
+        .Zip(metricas.PrevisoesSazonalManualTeste, (d, v) => new { Data = d, Quantidade = v })
+        .GroupBy(row => row.Data)
+        .Select(group => new { Data = group.Key, Quantidade = (int)Math.Round(group.Sum(row => row.Quantidade)) })
         .ToList();
 
     return new
@@ -363,9 +413,9 @@ app.MapGet("/api/dashboard", (
         Cards = new
         {
             Mae = Math.Round(metricas.Mae, 3),
-            MaeBaseline = Math.Round(metricas.MaeBaseline, 3),
+            MaeSazonalManual = Math.Round(metricas.MaeSazonalManual, 3),
             Rmse = Math.Round(metricas.Rmse, 3),
-            RmseBaseline = Math.Round(metricas.RmseBaseline, 3),
+            RmseSazonalManual = Math.Round(metricas.RmseSazonalManual, 3),
             GanhoPrecisao = Math.Round(ganho, 1),
             TempoTreinoMs = metricas.TempoTreinamentoMs,
             TempoInferenciaMs = metricas.TempoInferenciaMs,
@@ -383,7 +433,7 @@ app.MapGet("/api/dashboard", (
         {
             Historico = serieHistorica,
             Previsao  = seriePrevista,
-            Baseline  = serieBaseline
+            SazonalManual = serieSazonalManual
         },
 
         // Painel Inclusivo tabela

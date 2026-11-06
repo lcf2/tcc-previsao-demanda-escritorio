@@ -14,6 +14,31 @@ public sealed class ExcelConsumptionImporter
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     private static readonly XNamespace PackageRelationshipNamespace =
         "http://schemas.openxmlformats.org/package/2006/relationships";
+    private static readonly string[] MovementHeaders =
+    [
+        "tipodemovimento", "tipomovimento", "tipomov", "tipemov", "mov", "bwart",
+        "movementtype", "movement", "movimento"
+    ];
+    private static readonly string[] DateHeaders =
+    [
+        "datadelancamento", "data", "postingdate", "documentdate", "date",
+        "datareferencia", "periodo", "mesano"
+    ];
+    private static readonly string[] MaterialHeaders =
+    [
+        "material", "codigodomaterial", "codigomaterial", "materialcode"
+    ];
+    private static readonly string[] QuantityHeaders =
+    [
+        "quantidade", "quantidadeconsumida", "consumo", "qtd", "qty", "quantity", "menge"
+    ];
+    private static readonly Dictionary<string, int> SapConsumptionMovements = new(StringComparer.Ordinal)
+    {
+        ["201"] = -1,
+        ["261"] = -1,
+        ["202"] = 1,
+        ["262"] = 1
+    };
 
     private static readonly Dictionary<string, int> PortugueseMonths = new(StringComparer.Ordinal)
     {
@@ -37,7 +62,8 @@ public sealed class ExcelConsumptionImporter
         int MovimentacoesLidas,
         int LinhasDeSubtotalIgnoradas,
         int AgrupamentosConferidos,
-        int DivergenciasComPlanilha9);
+        int DivergenciasComPlanilha9,
+        bool MovimentosSapClassificados);
 
     public ImportResult Import(Stream stream)
     {
@@ -59,11 +85,77 @@ public sealed class ExcelConsumptionImporter
         var sharedStrings = ReadSharedStrings(archive);
         bool hasSummary = sheets.TryGetValue("planilha9", out var summarySheet);
         bool hasTransactions = sheets.TryGetValue("mb51", out var transactionSheet);
-        if (!hasTransactions && !hasSummary)
-            throw new InvalidDataException("O arquivo não contém a aba MB51 nem Planilha9.");
+        bool hasDatedTransactions = sheets.TryGetValue("planilha2", out var datedTransactionSheet);
+        bool absoluteQuantities = false;
+        bool movementsClassified = hasTransactions || hasDatedTransactions;
+        if (hasDatedTransactions)
+        {
+            string sheetName = (string)datedTransactionSheet!.Attribute("name")!;
+            var header = FindHeader(
+                ReadRows(LoadSheet(archive, datedTransactionSheet, relationships)),
+                sharedStrings,
+                sheetName,
+                "material", "quantidade", "datadelancamento");
+            movementsClassified = TryGetMovementColumn(header.Columns, out _);
+        }
+        if (hasSummary)
+        {
+            var summaryRows = ReadRows(LoadSheet(archive, summarySheet!, relationships));
+            var header = FindMonthlySummaryHeader(summaryRows, sharedStrings, (string)summarySheet!.Attribute("name")!);
+            movementsClassified |= TryGetMovementColumn(header.Columns, out _);
+        }
+        if (!hasSummary && !hasTransactions && !hasDatedTransactions)
+        {
+            foreach (var sheet in sheets.Values)
+            {
+                var worksheet = LoadSheet(archive, sheet, relationships);
+                string sheetName = (string)sheet.Attribute("name")!;
+                try
+                {
+                    var header = FindHeader(
+                        ReadRows(worksheet),
+                        sharedStrings,
+                        sheetName,
+                        "material", "quantidade", "datadelancamento");
+                    datedTransactionSheet = sheet;
+                    hasDatedTransactions = true;
+                    movementsClassified = TryGetMovementColumn(header.Columns, out _);
+                }
+                catch (InvalidDataException)
+                {
+                    try
+                    {
+                        var header = FindMonthlySummaryHeader(
+                            ReadRows(worksheet),
+                            sharedStrings,
+                            sheetName);
+                        movementsClassified = TryGetMovementColumn(header.Columns, out _);
+                        absoluteQuantities = !movementsClassified;
+                        summarySheet = sheet;
+                        hasSummary = true;
+                    }
+                    catch (InvalidDataException)
+                    {
+                        continue;
+                    }
+                }
 
+                break;
+            }
+        }
+        if (!hasTransactions && !hasDatedTransactions && !hasSummary)
+            throw new InvalidDataException(
+                "Não encontrei uma tabela com material, quantidade e data (ou ano/mês) em nenhuma aba.");
+
+        string summarySheetName = hasSummary
+            ? (string)summarySheet!.Attribute("name")!
+            : "Planilha9";
         var summaryTotals = hasSummary
-            ? ReadSummary(LoadSheet(archive, summarySheet!, relationships), sharedStrings, "Planilha9")
+            ? ReadSummary(
+                LoadSheet(archive, summarySheet!, relationships),
+                sharedStrings,
+                summarySheetName,
+                absoluteQuantities)
             : null;
 
         Dictionary<(string Material, DateTime Date), double> signedMonthlyTotals;
@@ -80,9 +172,19 @@ public sealed class ExcelConsumptionImporter
                 out transactionRows,
                 out skippedSubtotalRows);
         }
+        else if (hasDatedTransactions)
+        {
+            sourceSheet = (string)datedTransactionSheet!.Attribute("name")!;
+            signedMonthlyTotals = ReadDatedTransactions(
+                LoadSheet(archive, datedTransactionSheet, relationships),
+                sharedStrings,
+                sourceSheet,
+                out transactionRows,
+                out skippedSubtotalRows);
+        }
         else
         {
-            sourceSheet = "Planilha9";
+            sourceSheet = summarySheetName;
             signedMonthlyTotals = summaryTotals!;
         }
 
@@ -126,7 +228,9 @@ public sealed class ExcelConsumptionImporter
                     Categoria = "Não informado",
                     Subcategoria = "Não informado",
                     Setor = "Geral",
-                    QuantidadeConsumida = (float)Math.Max(0, -signedQuantity)
+                    QuantidadeConsumida = (float)(absoluteQuantities
+                        ? signedQuantity
+                        : Math.Max(0, -signedQuantity))
                 });
             }
         }
@@ -137,7 +241,8 @@ public sealed class ExcelConsumptionImporter
             transactionRows,
             skippedSubtotalRows,
             reconciledRows,
-            summaryDifferences);
+            summaryDifferences,
+            movementsClassified);
     }
 
     private static Dictionary<(string Material, DateTime Date), double> ReadTransactions(
@@ -159,8 +264,11 @@ public sealed class ExcelConsumptionImporter
         foreach (var row in rows.Where(row => ParseRowNumber(row) > header.RowNumber))
         {
             var cells = ReadRow(row, sharedStrings);
-            string movementType = cells.GetValueOrDefault(header.Columns["tipodemovimento"], "").Trim();
-            if (movementType.Length == 0)
+            bool hasMovementColumn = TryGetMovementColumn(header.Columns, out string movementColumn);
+            string movementType = hasMovementColumn
+                ? cells.GetValueOrDefault(header.Columns[movementColumn], "").Trim()
+                : "";
+            if (hasMovementColumn && movementType.Length == 0)
             {
                 skippedSubtotalRows++;
                 continue;
@@ -179,6 +287,7 @@ public sealed class ExcelConsumptionImporter
             if (!double.TryParse(cells.GetValueOrDefault(header.Columns["quantidade"]),
                     NumberStyles.Float, CultureInfo.InvariantCulture, out double quantity))
                 throw new InvalidDataException($"Quantidade inválida na linha {rowNumber} da aba MB51.");
+            quantity = SignedSapConsumption(movementType, quantity, rowNumber, "MB51");
 
             DateTime date = new(year, month, 1);
             var key = (material, date);
@@ -189,17 +298,80 @@ public sealed class ExcelConsumptionImporter
         return totals;
     }
 
-    private static Dictionary<(string Material, DateTime Date), double> ReadSummary(
+    private static Dictionary<(string Material, DateTime Date), double> ReadDatedTransactions(
         XDocument worksheet,
         IReadOnlyList<string> sharedStrings,
-        string sheetName)
+        string sheetName,
+        out int transactionRows,
+        out int skippedSubtotalRows)
     {
         var rows = ReadRows(worksheet);
         var header = FindHeader(
             rows,
             sharedStrings,
             sheetName,
-            "material", "ano", "mes", "somadequantidade");
+            "material",
+            "quantidade",
+            "datadelancamento");
+        var totals = new Dictionary<(string Material, DateTime Date), double>();
+        bool hasMovementColumn = TryGetMovementColumn(header.Columns, out string movementColumn);
+        transactionRows = 0;
+        skippedSubtotalRows = 0;
+
+        foreach (var row in rows.Where(row => ParseRowNumber(row) > header.RowNumber))
+        {
+            var cells = ReadRow(row, sharedStrings);
+            string movementType = hasMovementColumn
+                ? cells.GetValueOrDefault(header.Columns[movementColumn], "").Trim()
+                : "";
+            if (hasMovementColumn && movementType.Length == 0)
+            {
+                skippedSubtotalRows++;
+                continue;
+            }
+
+            int rowNumber = ParseRowNumber(row);
+            string material = cells.GetValueOrDefault(header.Columns["material"], "").Trim();
+            if (material.Length == 0)
+                throw new InvalidDataException($"Material inválido na linha {rowNumber} da aba {sheetName}.");
+
+            if (!double.TryParse(cells.GetValueOrDefault(header.Columns["quantidade"]),
+                    NumberStyles.Float, CultureInfo.InvariantCulture, out double quantity))
+                throw new InvalidDataException($"Quantidade inválida na linha {rowNumber} da aba {sheetName}.");
+
+            DateTime date = ParseExcelDate(
+                cells.GetValueOrDefault(header.Columns["datadelancamento"], ""),
+                rowNumber,
+                sheetName);
+            quantity = hasMovementColumn
+                ? SignedSapConsumption(movementType, quantity, rowNumber, sheetName)
+                : Math.Abs(quantity);
+            var key = (material, new DateTime(date.Year, date.Month, 1));
+            totals[key] = totals.GetValueOrDefault(key) + quantity;
+            transactionRows++;
+        }
+
+        return totals;
+    }
+
+    private static Dictionary<(string Material, DateTime Date), double> ReadSummary(
+        XDocument worksheet,
+        IReadOnlyList<string> sharedStrings,
+        string sheetName,
+        bool absoluteQuantities)
+    {
+        var rows = ReadRows(worksheet);
+        var header = FindMonthlySummaryHeader(rows, sharedStrings, sheetName);
+        bool hasMovementColumn = TryGetMovementColumn(header.Columns, out string movementColumn);
+        string quantityColumn = header.Columns.ContainsKey("somadequantidade")
+            ? "somadequantidade"
+            : header.Columns.ContainsKey("quantidade")
+                ? "quantidade"
+                : header.Columns.ContainsKey("quantity")
+                    ? "quantity"
+                    : header.Columns.ContainsKey("qtd")
+                        ? "qtd"
+                        : "qty";
         var totals = new Dictionary<(string Material, DateTime Date), double>();
 
         foreach (var row in rows.Where(row => ParseRowNumber(row) > header.RowNumber))
@@ -210,6 +382,11 @@ public sealed class ExcelConsumptionImporter
                 continue;
 
             int rowNumber = ParseRowNumber(row);
+            string movementType = hasMovementColumn
+                ? cells.GetValueOrDefault(header.Columns[movementColumn], "").Trim()
+                : "";
+            if (hasMovementColumn && movementType.Length == 0)
+                continue;
             string yearValue = cells.GetValueOrDefault(header.Columns["ano"], "");
             string monthValue = cells.GetValueOrDefault(header.Columns["mes"], "");
             if (yearValue.Length == 0 && monthValue.Length == 0)
@@ -219,14 +396,45 @@ public sealed class ExcelConsumptionImporter
                 throw new InvalidDataException($"Ano inválido na linha {rowNumber} da aba {sheetName}.");
 
             int month = ParseMonth(monthValue, rowNumber);
-            if (!double.TryParse(cells.GetValueOrDefault(header.Columns["somadequantidade"]),
+            if (!double.TryParse(cells.GetValueOrDefault(header.Columns[quantityColumn]),
                     NumberStyles.Float, CultureInfo.InvariantCulture, out double quantity))
                 throw new InvalidDataException($"Quantidade inválida na linha {rowNumber} da aba {sheetName}.");
 
+            if (hasMovementColumn)
+                quantity = SignedSapConsumption(movementType, quantity, rowNumber, sheetName);
+            else if (absoluteQuantities)
+                quantity = Math.Abs(quantity);
             var key = (material, new DateTime(year, month, 1));
             totals[key] = totals.GetValueOrDefault(key) + quantity;
         }
         return totals;
+    }
+
+    private static (int RowNumber, Dictionary<string, int> Columns) FindMonthlySummaryHeader(
+        IReadOnlyList<XElement> rows,
+        IReadOnlyList<string> sharedStrings,
+        string sheetName)
+    {
+        string[] quantityColumns = ["somadequantidade", "quantidade", "quantity", "qtd", "qty", "menge"];
+        foreach (var row in rows)
+        {
+            var columns = ReadRow(row, sharedStrings)
+                .Select(pair => (Name: NormalizeHeader(pair.Value), pair.Key))
+                .Where(pair => pair.Name.Length > 0)
+                .ToDictionary(pair => pair.Name, pair => pair.Key, StringComparer.Ordinal);
+            AddMovementHeaderAlias(columns);
+            AddMaterialHeaderAlias(columns);
+            AddQuantityHeaderAlias(columns);
+            AddDateHeaderAlias(columns);
+            if (columns.ContainsKey("material") &&
+                columns.ContainsKey("ano") &&
+                columns.ContainsKey("mes") &&
+                quantityColumns.Any(columns.ContainsKey))
+                return (ParseRowNumber(row), columns);
+        }
+
+        throw new InvalidDataException(
+            $"Não encontrei as colunas necessárias na aba '{sheetName}'.");
     }
 
     private static List<XElement> ReadRows(XDocument worksheet)
@@ -262,11 +470,69 @@ public sealed class ExcelConsumptionImporter
                 .Select(pair => (Name: NormalizeHeader(pair.Value), pair.Key))
                 .Where(pair => pair.Name.Length > 0)
                 .ToDictionary(pair => pair.Name, pair => pair.Key, StringComparer.Ordinal);
+            AddMovementHeaderAlias(columns);
+            AddMaterialHeaderAlias(columns);
+            AddQuantityHeaderAlias(columns);
+            AddDateHeaderAlias(columns);
             if (requiredColumns.All(columns.ContainsKey))
                 return (ParseRowNumber(row), columns);
         }
 
         throw new InvalidDataException($"Não encontrei as colunas necessárias na aba '{sheetName}'.");
+    }
+
+    private static void AddMovementHeaderAlias(Dictionary<string, int> columns)
+    {
+        if (TryGetMovementColumn(columns, out string movementColumn))
+            columns["tipodemovimento"] = columns[movementColumn];
+    }
+
+    private static void AddDateHeaderAlias(Dictionary<string, int> columns)
+    {
+        string? dateColumn = DateHeaders.FirstOrDefault(columns.ContainsKey);
+        if (dateColumn is not null)
+            columns["datadelancamento"] = columns[dateColumn];
+    }
+
+    private static void AddMaterialHeaderAlias(Dictionary<string, int> columns)
+    {
+        string? materialColumn = MaterialHeaders.FirstOrDefault(columns.ContainsKey);
+        if (materialColumn is not null)
+            columns["material"] = columns[materialColumn];
+    }
+
+    private static void AddQuantityHeaderAlias(Dictionary<string, int> columns)
+    {
+        string? quantityColumn = QuantityHeaders.FirstOrDefault(columns.ContainsKey);
+        if (quantityColumn is not null)
+            columns["quantidade"] = columns[quantityColumn];
+    }
+
+    private static bool TryGetMovementColumn(
+        IReadOnlyDictionary<string, int> columns,
+        out string movementColumn)
+    {
+        movementColumn = MovementHeaders.FirstOrDefault(columns.ContainsKey) ?? "";
+        return movementColumn.Length > 0;
+    }
+
+    private static double SignedSapConsumption(
+        string movementType,
+        double quantity,
+        int rowNumber,
+        string sheetName)
+    {
+        string code = movementType.Trim();
+        if (code.EndsWith(".0", StringComparison.Ordinal) &&
+            int.TryParse(code[..^2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int numericCode))
+            code = numericCode.ToString(CultureInfo.InvariantCulture);
+
+        if (!SapConsumptionMovements.TryGetValue(code, out int direction))
+            throw new InvalidDataException(
+                $"Tipo de movimento não suportado na linha {rowNumber} da aba {sheetName}. " +
+                "São aceitos apenas 201, 202, 261 e 262.");
+
+        return direction * Math.Abs(quantity);
     }
 
     private static Dictionary<int, string> ReadRow(XElement row, IReadOnlyList<string> sharedStrings)
@@ -362,5 +628,21 @@ public sealed class ExcelConsumptionImporter
             return number;
 
         throw new InvalidDataException($"Mês inválido na linha {rowNumber} da aba Planilha9.");
+    }
+
+    private static DateTime ParseExcelDate(string value, int rowNumber, string sheetName)
+    {
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double serial) &&
+            serial is >= 1 and < 2958466)
+            return DateTime.FromOADate(serial).Date;
+
+        if (DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces,
+                out DateTime date))
+            return date.Date;
+
+        throw new InvalidDataException($"Data inválida na linha {rowNumber} da aba {sheetName}.");
     }
 }

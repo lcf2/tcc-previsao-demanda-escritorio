@@ -45,6 +45,45 @@ from benchmark import benchmark_request_payload, run_random_forest_benchmark
 from forecaster import MaterialForecaster
 import post_processing
 
+
+def build_seasonal_forecast(history, horizon=12):
+    monthly = history.copy()
+    monthly["Data"] = pd.to_datetime(monthly["Data"]).dt.to_period("M").dt.to_timestamp()
+    monthly = (
+        monthly.groupby(["Setor", "Material", "Data"], as_index=False)[
+            "Quantidade_Consumida"
+        ]
+        .sum()
+        .sort_values(["Setor", "Material", "Data"])
+    )
+    observed = {
+        (row.Setor, str(row.Material), row.Data): float(row.Quantidade_Consumida)
+        for row in monthly.itertuples(index=False)
+    }
+    series = monthly[["Setor", "Material"]].drop_duplicates()
+    future_dates = pd.date_range(
+        monthly["Data"].max() + pd.offsets.MonthBegin(1),
+        periods=horizon,
+        freq="MS",
+    )
+    forecasts = []
+    for date in future_dates:
+        reference_date = date - pd.DateOffset(years=1)
+        for row in series.itertuples(index=False):
+            material = str(row.Material)
+            forecasts.append({
+                "Data": date,
+                "Setor": row.Setor,
+                "Material": material,
+                "Data_Referencia": reference_date,
+                "Quantidade_Referencia": observed.get(
+                    (row.Setor, material, reference_date),
+                    0.0,
+                ),
+            })
+    return pd.DataFrame(forecasts)
+
+
 # =================================================================
 # UI/UX: CONFIGURAÇÃO DE TEMA E ESTILO PREMIUM
 # =================================================================
@@ -250,9 +289,9 @@ if 'produtos' not in st.session_state:
 if 'produtos_sinteticos' not in st.session_state:
     st.session_state.produtos_sinteticos = [dict(produto) for produto in st.session_state.produtos]
 
-if st.session_state.get("benchmark_result_version") != 4:
+if st.session_state.get("benchmark_result_version") != 6:
     st.session_state.pop("resultado_benchmark", None)
-    st.session_state["benchmark_result_version"] = 4
+    st.session_state["benchmark_result_version"] = 6
 
 # =================================================================
 # BARRA LATERAL: CENTRAL DE SIMULAÇÃO
@@ -264,9 +303,11 @@ st.sidebar.image(
 st.sidebar.title("🖥️ Central de Simulação")
 st.sidebar.info("Tema: ML na Previsão de Demanda de Materiais de Escritório e Indiretos Ergonômicos")
 
+arquivo_local = Path(__file__).resolve().parent / "dados_privados" / "base_real.xlsx"
 modo_dados = st.sidebar.selectbox(
     "Origem dos dados",
-    ["Dados sintéticos", "Planilha Excel completa (MB51 + conferência)"],
+    ["Dados sintéticos", "Planilha Excel real"],
+    index=1 if arquivo_local.is_file() else 0,
     key="modo_dados"
 )
 
@@ -285,10 +326,20 @@ else:
         type=["xlsx"],
         key="arquivo_planilha9"
     )
-    if arquivo_excel is not None:
+    if arquivo_excel is not None or arquivo_local.is_file():
         try:
-            fingerprint = hashlib.sha256(arquivo_excel.getvalue()).hexdigest()
-            df_real, df_rh_real = data_loader.load_real_consumption_excel(arquivo_excel)
+            if arquivo_excel is not None:
+                conteudo_arquivo = arquivo_excel.getvalue()
+                fingerprint = hashlib.sha256(conteudo_arquivo).hexdigest()
+                arquivo_para_importar = arquivo_excel
+            else:
+                with arquivo_local.open("rb") as arquivo:
+                    conteudo_arquivo = arquivo.read()
+                fingerprint = hashlib.sha256(conteudo_arquivo).hexdigest()
+                arquivo_para_importar = arquivo_local
+            df_real, df_rh_real = data_loader.load_real_consumption_excel(
+                arquivo_para_importar
+            )
         except (ValueError, ImportError, OSError) as error:
             st.sidebar.error(f"Não foi possível importar a planilha: {error}")
             st.stop()
@@ -305,13 +356,22 @@ else:
         )
         st.session_state.modo_dados_aplicado = modo_dados
     elif st.session_state.modo_dados_aplicado != modo_dados:
-        st.sidebar.info("Envie o arquivo Excel completo para carregar os dados reais.")
+        st.sidebar.info(
+            "Envie o Excel acima ou coloque uma planilha em "
+            "'dados_privados\\base_real.xlsx' para carregar os dados reais."
+        )
         st.stop()
 
     dados_reais_ativos = True
+    fonte_dados = st.session_state.df_consumo.attrs.get("fonte_importacao", "")
+    rotulo_fonte = (
+        "movimentações SAP"
+        if str(fonte_dados).strip().lower() in {"mb51", "planilha2"}
+        else "Excel tabular"
+    )
     st.sidebar.success(
         f"Base real ativa: {st.session_state.df_consumo['Material'].nunique()} materiais "
-        f"({st.session_state.df_consumo.attrs.get('fonte_importacao', 'Excel')})"
+        f"({rotulo_fonte})"
     )
     conferencia = st.session_state.df_consumo.attrs.get("conferencia_planilha9")
     if conferencia is not None:
@@ -437,49 +497,236 @@ def main():
             st.title("🖥️ Supply Chain Inteligente & Ergonomia")
             st.markdown("#### Protótipo de TCC - Central de Simulação UNIP")
             if dados_reais_ativos:
-                st.info(
-                    "Dados reais da aba MB51. Planilha9 é usada apenas para conferência, "
-                    "nunca para somar novamente as mesmas movimentações. "
-                    "Os códigos são tratados como materiais, "
-                    "todos os movimentos são somados por material/mês e saldos negativos "
-                    "são convertidos em consumo positivo. Tipos de movimento ainda não são "
-                    "classificados; valide a regra de consumo antes de interpretar resultados. "
-                    "A planilha não fornece setor ou cadastro de RH."
-                )
+                if st.session_state.df_consumo.attrs.get("movimentos_sap_classificados"):
+                    st.info(
+                        "Movimentos SAP 201/261 tratados como consumo e 202/262 como estorno; "
+                        "o saldo mensal líquido é convertido em consumo não negativo. "
+                        "Os registros são agregados por material/mês."
+                    )
+                else:
+                    st.info(
+                        "Dados reais da tabela Excel, organizados e somados por material/mês. "
+                        "A quantidade foi convertida em valor absoluto conforme a regra "
+                        "selecionada para esta planilha. Sem tipo de movimento, "
+                        "a importação não separa consumo de estornos."
+                    )
+                st.caption("A planilha não fornece setor ou cadastro de RH.")
 
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4 = st.columns(4)
             total_prev = df_inclusive['Previsao_Bruta'].sum()
-            total_active = len(df_colaboradores)
             pcd_rate = (
                 len(df_colaboradores[df_colaboradores['Restricao_Ergonomica'] != "Nenhuma"])
-                / total_active * 100
-                if total_active else 0
+                / len(df_colaboradores) * 100
+                if len(df_colaboradores) else 0
             )
             total_adaptados = df_inclusive['Quantidade_Especial'].sum() if 'Quantidade_Especial' in df_inclusive.columns else 0
 
             c1.metric("Previsão Bruta (90d)", f"{total_prev} un.")
             c2.metric("Acurácia (MAE)", f"{mae:.2f}")
-            c3.metric("Colaboradores Ativos", total_active)
-            c4.metric("Taxa de Inclusão", f"{pcd_rate:.1f}%")
-            c5.metric("Itens Adaptados", f"{total_adaptados} un.")
+            c3.metric("Taxa de Inclusão", f"{pcd_rate:.1f}%")
+            c4.metric("Itens Adaptados", f"{total_adaptados} un.")
 
         # ABAS DE NAVEGAÇÃO
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab_sazonal, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📈 Dashboard Preditivo", 
+            "📅 Dashboard Sazonal Manual",
             "♿ Relatório Ergonômico", 
             "📄 Fundamentação Teórica", 
             "🛠️ Central de Edição de Dados",
-            "⚖️ Benchmark RF × FastTree"
+            "⚖️ RF × FastTree × sazonal manual",
+            "📚 Base Organizada"
         ])
+
+        with tab6:
+            st.subheader("Dados organizados usados pelo dashboard")
+            st.caption(
+                "Visualização local da base já processada após a importação. "
+                "Os registros são agrupados por material e mês."
+            )
+            base_organizada = df_consumo.copy()
+            base_organizada["Data"] = (
+                pd.to_datetime(base_organizada["Data"])
+                .dt.to_period("M")
+                .dt.to_timestamp()
+            )
+
+            if base_organizada.empty:
+                st.info("Não há registros para exibir.")
+            else:
+                meses_disponiveis = sorted(base_organizada["Data"].dropna().unique())
+                materiais_disponiveis = sorted(
+                    base_organizada["Material"].dropna().astype(str).unique()
+                )
+                filtro_material, filtro_inicio, filtro_fim = st.columns([2, 1, 1])
+                with filtro_material:
+                    materiais_selecionados = st.multiselect(
+                        "Materiais (vazio = todos)",
+                        options=materiais_disponiveis,
+                        placeholder="Todos os materiais",
+                    )
+                with filtro_inicio:
+                    mes_inicio = st.selectbox(
+                        "Mês inicial",
+                        options=meses_disponiveis,
+                        index=0,
+                        format_func=lambda value: pd.Timestamp(value).strftime("%m/%Y"),
+                    )
+                with filtro_fim:
+                    mes_fim = st.selectbox(
+                        "Mês final",
+                        options=meses_disponiveis,
+                        index=len(meses_disponiveis) - 1,
+                        format_func=lambda value: pd.Timestamp(value).strftime("%m/%Y"),
+                    )
+
+                if mes_inicio > mes_fim:
+                    st.warning("O mês inicial deve ser anterior ou igual ao mês final.")
+                else:
+                    dados_filtrados = base_organizada[
+                        base_organizada["Data"].between(mes_inicio, mes_fim)
+                    ].copy()
+                    if materiais_selecionados:
+                        dados_filtrados = dados_filtrados[
+                            dados_filtrados["Material"].astype(str).isin(materiais_selecionados)
+                        ]
+
+                    resumo1, resumo2, resumo3 = st.columns(3)
+                    resumo1.metric("Registros", f"{len(dados_filtrados):,}")
+                    resumo2.metric(
+                        "Materiais",
+                        f"{dados_filtrados['Material'].nunique():,}",
+                    )
+                    resumo3.metric(
+                        "Consumo total (filtros)",
+                        f"{dados_filtrados['Quantidade_Consumida'].sum():,.0f} un.",
+                    )
+                    st.caption(
+                        "Soma da quantidade consumida nos meses selecionados, para os "
+                        "materiais filtrados (ou todos, se nenhum material for selecionado)."
+                    )
+
+                    modo_visualizacao = st.radio(
+                        "Visualização",
+                        ["Detalhes mensais", "Resumo por material/mês"],
+                        horizontal=True,
+                    )
+                    if modo_visualizacao == "Resumo por material/mês":
+                        dados_filtrados = (
+                            dados_filtrados.groupby(
+                                ["Material", "Data"], as_index=False
+                            )
+                            .agg(
+                                Quantidade_Consumida=("Quantidade_Consumida", "sum"),
+                                Setor=("Setor", "first"),
+                                Categoria=("Categoria", "first"),
+                                Subcategoria=("Subcategoria", "first"),
+                            )
+                            .sort_values(["Data", "Material"])
+                        )
+                    else:
+                        dados_filtrados = dados_filtrados.sort_values(
+                            ["Data", "Material", "Setor"]
+                        )
+
+                    st.dataframe(
+                        dados_filtrados.reset_index(drop=True),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=500,
+                    )
+                    if dados_reais_ativos and st.session_state.df_consumo.attrs.get(
+                        "movimentos_sap_classificados"
+                    ):
+                        st.caption(
+                            "Movimentos SAP 201/261 tratados como consumo e 202/262 "
+                            "como estornos antes da consolidação mensal."
+                        )
+                    elif dados_reais_ativos:
+                        st.caption(
+                            "A planilha não contém tipo de movimento; quantidades "
+                            "foram organizadas conforme a regra de importação da origem."
+                        )
+                    else:
+                        st.caption(
+                            "Dados sintéticos organizados mensalmente por material e setor."
+                        )
 
         with tab1:
             st.subheader("Análise Preditiva de Consumo (Random Forest)")
-            
-            validacao_mensal = pd.DataFrame({
-                "Data": pd.to_datetime(X_test["Data"]),
-                "Real": y_test.to_numpy(),
-                "Previsto": y_pred,
-            }).groupby("Data", as_index=False).sum()
+
+            materiais_dashboard = sorted(
+                df_consumo["Material"].dropna().astype(str).unique()
+            )
+            material_dashboard = st.selectbox(
+                "Material analisado",
+                options=materiais_dashboard,
+                key="dashboard_material_selecionado",
+            )
+            historico_material = (
+                df_consumo[
+                    df_consumo["Material"].astype(str) == material_dashboard
+                ]
+                .assign(Data=lambda frame: pd.to_datetime(frame["Data"]))
+                .groupby("Data", as_index=False)["Quantidade_Consumida"]
+                .sum()
+                .sort_values("Data")
+            )
+            previsao_material = (
+                df_future[df_future["Material"].astype(str) == material_dashboard]
+                .groupby("Data", as_index=False)["Previsao_Bruta"]
+                .sum()
+                .sort_values("Data")
+            )
+
+            fig_demanda_material = go.Figure()
+            fig_demanda_material.add_trace(go.Scatter(
+                x=historico_material["Data"],
+                y=historico_material["Quantidade_Consumida"],
+                name="Consumo real",
+                mode="lines+markers",
+                line=dict(color="#222222", width=2),
+            ))
+            datas_previsao = previsao_material["Data"].tolist()
+            quantidades_previsao = previsao_material["Previsao_Bruta"].tolist()
+            if not historico_material.empty and datas_previsao:
+                datas_previsao.insert(0, historico_material["Data"].iloc[-1])
+                quantidades_previsao.insert(
+                    0, historico_material["Quantidade_Consumida"].iloc[-1]
+                )
+            fig_demanda_material.add_trace(go.Scatter(
+                x=datas_previsao,
+                y=quantidades_previsao,
+                name="Previsão Random Forest (90d)",
+                mode="lines+markers",
+                line=dict(color="#777777", dash="dash", width=2),
+            ))
+            fig_demanda_material.update_layout(
+                title=f"Histórico e previsão de demanda: {material_dashboard}",
+                xaxis_title="Mês",
+                yaxis_title="Unidades",
+                template="plotly_white",
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111111",
+                legend_title_text="Série",
+            )
+            st.plotly_chart(
+                fig_demanda_material,
+                use_container_width=True,
+                theme=None,
+            )
+
+            validacao_material = X_test.copy()
+            validacao_material["Real"] = np.asarray(y_test)
+            validacao_material["Previsto"] = y_pred
+            validacao_mensal = (
+                validacao_material[
+                    validacao_material["Material"].astype(str) == material_dashboard
+                ]
+                .assign(Data=lambda frame: pd.to_datetime(frame["Data"]))
+                .groupby("Data", as_index=False)[["Real", "Previsto"]]
+                .sum()
+            )
             fig_val = go.Figure()
             fig_val.add_trace(go.Scatter(
                 x=validacao_mensal["Data"],
@@ -498,9 +745,9 @@ def main():
                 marker=dict(symbol="x"),
             ))
             fig_val.update_layout(
-                title="Validação temporal recursiva por mês (80/20)",
+                title=f"Validação temporal por mês: {material_dashboard} (80/20)",
                 xaxis_title="Mês",
-                yaxis_title="Unidades agregadas",
+                yaxis_title="Unidades",
                 template="plotly_white",
                 paper_bgcolor="#ffffff",
                 plot_bgcolor="#ffffff",
@@ -524,6 +771,107 @@ def main():
             )
             st.plotly_chart(fig_bar, use_container_width=True, theme=None)
 
+        with tab_sazonal:
+            st.subheader("Previsão sazonal manual")
+            st.caption(
+                "A cada mês, a previsão repete o consumo observado no mesmo mês do ano "
+                "anterior. Se não existir registro para o mês de referência, considera zero."
+            )
+            previsoes_sazonais = build_seasonal_forecast(df_consumo)
+            materiais_sazonais = sorted(
+                previsoes_sazonais["Material"].dropna().astype(str).unique()
+            )
+            material_sazonal = st.selectbox(
+                "Material analisado",
+                options=materiais_sazonais,
+                key="dashboard_material_sazonal",
+            )
+            historico_sazonal = (
+                df_consumo[df_consumo["Material"].astype(str) == material_sazonal]
+                .assign(Data=lambda frame: pd.to_datetime(frame["Data"]))
+                .groupby("Data", as_index=False)["Quantidade_Consumida"]
+                .sum()
+                .sort_values("Data")
+            )
+            previsao_sazonal = (
+                previsoes_sazonais[
+                    previsoes_sazonais["Material"].astype(str) == material_sazonal
+                ]
+                .groupby("Data", as_index=False)
+                .agg(
+                    Quantidade_Prevista=("Quantidade_Referencia", "sum"),
+                    Referencia=("Data_Referencia", "first"),
+                )
+                .sort_values("Data")
+            )
+
+            seasonal_total, seasonal_average = st.columns(2)
+            seasonal_total.metric(
+                "Previsão sazonal (12 meses)",
+                f"{previsao_sazonal['Quantidade_Prevista'].sum():,.0f} un.",
+            )
+            seasonal_average.metric(
+                "Média mensal prevista",
+                f"{previsao_sazonal['Quantidade_Prevista'].mean():,.1f} un.",
+            )
+
+            fig_sazonal = go.Figure()
+            fig_sazonal.add_trace(go.Scatter(
+                x=historico_sazonal["Data"],
+                y=historico_sazonal["Quantidade_Consumida"],
+                name="Consumo real",
+                mode="lines+markers",
+                line=dict(color="#222222", width=2),
+            ))
+            datas_sazonais = previsao_sazonal["Data"].tolist()
+            quantidades_sazonais = previsao_sazonal["Quantidade_Prevista"].tolist()
+            if not historico_sazonal.empty and datas_sazonais:
+                datas_sazonais.insert(0, historico_sazonal["Data"].iloc[-1])
+                quantidades_sazonais.insert(
+                    0, historico_sazonal["Quantidade_Consumida"].iloc[-1]
+                )
+            fig_sazonal.add_trace(go.Scatter(
+                x=datas_sazonais,
+                y=quantidades_sazonais,
+                name="Previsão sazonal manual",
+                mode="lines+markers",
+                line=dict(color="#777777", dash="dash", width=2),
+            ))
+            fig_sazonal.update_layout(
+                title=f"Histórico e previsão sazonal: {material_sazonal}",
+                xaxis_title="Mês",
+                yaxis_title="Unidades",
+                template="plotly_white",
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#111111",
+                legend_title_text="Série",
+            )
+            st.plotly_chart(fig_sazonal, use_container_width=True, theme=None)
+
+            tabela_sazonal = previsao_sazonal.rename(columns={
+                "Data": "Mês previsto",
+                "Referencia": "Mês de referência",
+                "Quantidade_Prevista": "Quantidade prevista",
+            }).copy()
+            tabela_sazonal["Mês previsto"] = pd.to_datetime(
+                tabela_sazonal["Mês previsto"]
+            ).dt.strftime("%m/%Y")
+            tabela_sazonal["Mês de referência"] = pd.to_datetime(
+                tabela_sazonal["Mês de referência"]
+            ).dt.strftime("%m/%Y")
+            st.dataframe(
+                tabela_sazonal[
+                    [
+                        "Mês previsto",
+                        "Mês de referência",
+                        "Quantidade prevista",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
         with tab2:
             st.subheader("Relatório de Adequação Ergonômica (NR-17)")
             st.info("Ajustes automáticos baseados nas necessidades mapeadas pelo RH.")
@@ -542,6 +890,10 @@ def main():
             3. **Supply Chain Inclusivo:** A tecnologia como facilitadora da acessibilidade corporativa.
             """)
             st.latex(r"MAE = \frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y}_i|")
+            st.latex(
+                r"\mathrm{MAPE} = \frac{100\%}{n} "
+                r"\sum_{i=1}^{n} \left|\frac{y_i - \hat{y}_i}{y_i}\right|"
+            )
 
         with tab4:
             st.subheader("🛠️ Central de Edição de Dados (Grid Interativa)")
@@ -582,7 +934,7 @@ def main():
                 st.rerun()
 
         with tab5:
-            st.subheader("Benchmark temporal: Random Forest × FastTree")
+            st.subheader("Benchmark temporal: Random Forest × FastTree × sazonal manual")
             modo_captura = st.checkbox(
                 "Modo captura de tela (ocultar a barra lateral e os dados do arquivo)",
                 key="benchmark_modo_captura",
@@ -613,7 +965,7 @@ def main():
             if not modo_captura:
                 st.write(
                     "Os dois modelos recebem a mesma série mensal, treinam até a data de corte "
-                    "e preveem os mesmos três meses seguintes. A comparação usa os valores reais "
+                    "e preveem os mesmos doze meses seguintes. A comparação usa os valores reais "
                     "desses meses, sem embaralhar o histórico. A tela mostra apenas resultados "
                     "agregados: não exibe textos, nomes ou códigos presentes na planilha."
                 )
@@ -683,10 +1035,29 @@ def main():
             datas_disponiveis = sorted(
                 pd.to_datetime(df_consumo["Data"]).dt.to_period("M").dt.to_timestamp().unique()
             )
-            horizonte = 3
-            datas_corte = datas_disponiveis[2:-horizonte]
+            horizonte = 12
+            meses_por_serie = [
+                set(pd.to_datetime(group["Data"]).dt.to_period("M").dt.to_timestamp())
+                for _, group in df_consumo.groupby(["Setor", "Material"])
+            ]
+            datas_corte = [
+                cutoff
+                for cutoff in datas_disponiveis[11:-horizonte]
+                if all(
+                    any(month <= pd.Timestamp(cutoff) for month in months)
+                    and set(pd.date_range(
+                        pd.Timestamp(cutoff) + pd.offsets.MonthBegin(1),
+                        periods=horizonte,
+                        freq="MS",
+                    )).issubset(months)
+                    for months in meses_por_serie
+                )
+            ]
             if not len(datas_corte):
-                st.error("O benchmark precisa de pelo menos quatro meses de histórico.")
+                st.error(
+                    "Não há um corte com dados de treino para cada material/setor "
+                    "e doze meses completos de teste."
+                )
             else:
                 with st.form("form_benchmark_temporal"):
                     endpoint_csharp = st.text_input(
@@ -704,7 +1075,7 @@ def main():
                         "automaticamente ao executar o benchmark. "
                     )
                     st.caption(
-                        "Período de teste: " + ", ".join(
+                        f"Período avaliado ({horizonte} meses após o corte): " + ", ".join(
                             date.strftime("%m/%Y")
                             for date in pd.date_range(
                                 pd.Timestamp(corte) + pd.offsets.MonthBegin(1),
@@ -762,28 +1133,31 @@ def main():
                                 "Os valores reais usados pelos dois modelos não coincidem."
                             )
                         if not np.isclose(
-                            resultado_csharp["baselineMae"],
-                            resultado_python["baseline_mae"],
+                            resultado_csharp["maeSazonalManual"],
+                            resultado_python["manual_mae"],
                             rtol=0,
                             atol=1e-4,
                         ):
                             raise ValueError(
-                                "A linha de base simples diferiu entre Python e C#."
+                                "A comparação sazonal manual diferiu entre Python e C#."
                             )
-                        csharp_baseline_wape = resultado_csharp["baselineWape"]
-                        python_baseline_wape = resultado_python["baseline_wape"]
-                        if (csharp_baseline_wape is None) != (python_baseline_wape is None):
-                            raise ValueError(
-                                "A linha de base percentual diferiu entre Python e C#."
-                            )
-                        if python_baseline_wape is not None and not np.isclose(
-                            csharp_baseline_wape,
-                            python_baseline_wape,
+                        if not np.isclose(
+                            resultado_csharp["rmseSazonalManual"],
+                            resultado_python["manual_rmse"],
                             rtol=0,
-                            atol=1e-6,
+                            atol=1e-4,
                         ):
                             raise ValueError(
-                                "A linha de base percentual diferiu entre Python e C#."
+                                "O RMSE sazonal manual diferiu entre Python e C#."
+                            )
+                        if not np.isclose(
+                            resultado_csharp["totalSazonalManual"],
+                            resultado_python["manual_total_previsto"],
+                            rtol=0,
+                            atol=1e-4,
+                        ):
+                            raise ValueError(
+                                "O total sazonal manual diferiu entre Python e C#."
                             )
                         python_actual = pd.DataFrame(resultado_python["previsoes"])[
                             ["Data", "Setor", "Material", "Quantidade_Consumida"]
@@ -857,9 +1231,19 @@ def main():
                 rf = resultado["python"]
                 ft = resultado["csharp"]
                 st.markdown(
-                    f"**Corte:** {resultado['corte']} · "
-                    f"**Período avaliado:** {', '.join(resultado['meses_teste'])} · "
+                    f"**Treino até:** {resultado['corte']} · "
+                    f"**Período de teste ({len(resultado['meses_teste'])} meses):** "
+                    f"{', '.join(resultado['meses_teste'])} · "
                     f"**Pontos avaliados:** {rf['pontos_teste']}"
+                )
+                st.info(
+                    "Cada modelo prevê o consumo mensal de cada combinação de material e setor. "
+                    "O gráfico soma essas quantidades de todas as combinações em cada mês "
+                    "(não é média). “Consumo real” é a soma observada no período de teste; "
+                    "Random Forest e FastTree são as respectivas somas previstas. "
+                    "A terceira comparação é sazonal e manual: para cada material/setor, "
+                    "repete o valor do mesmo mês do ano anterior; se não houver "
+                    "registro daquele mês, considera consumo zero."
                 )
                 parametros = resultado["parametros"]
                 st.caption(
@@ -877,14 +1261,14 @@ def main():
                 placar_mae = {
                     "Random Forest": rf["mae"],
                     "FastTree": ft["mae"],
-                    "Baseline simples (último mês)": rf["baseline_mae"],
+                    "Método sazonal manual (ano anterior)": rf["manual_mae"],
                 }
                 vencedor = min(placar_mae, key=placar_mae.get)
                 st.success(
                     f"Menor MAE neste recorte: **{vencedor}** "
                     f"({placar_mae[vencedor]:,.2f} unidades). "
                     f"Random Forest: {rf['mae']:,.2f} · FastTree: {ft['mae']:,.2f} · "
-                    f"baseline simples: {rf['baseline_mae']:,.2f}. "
+                    f"sazonal manual: {rf['manual_mae']:,.2f}. "
                     "Resultado restrito ao período avaliado."
                 )
                 format_wape = lambda value: (
@@ -894,7 +1278,7 @@ def main():
                     "WAPE (erro absoluto / volume real): "
                     f"Random Forest {format_wape(rf['wape'])} · "
                     f"FastTree {format_wape(ft['wape'])} · "
-                    f"baseline {format_wape(rf['baseline_wape'])}."
+                    f"sazonal manual {format_wape(rf['manual_wape'])}."
                 )
                 if modo_captura:
                     st.caption(
@@ -902,7 +1286,7 @@ def main():
                         f"Random Forest {total_rf:,.0f} un. "
                         f"({total_rf - total_real:+,.0f}) · "
                         f"FastTree {total_ft:,.0f} un. ({total_ft - total_real:+,.0f}) · "
-                        f"baseline {rf['baseline_total_previsto']:,.0f} un."
+                        f"sazonal manual {rf['manual_total_previsto']:,.0f} un."
                     )
 
                 previsoes = pd.DataFrame(rf["previsoes"]).rename(columns={
@@ -933,7 +1317,7 @@ def main():
                             "Real": "sum",
                             "Random Forest": "sum",
                             "FastTree": "sum",
-                            "Baseline": "sum",
+                            "Sazonal_Manual": "sum",
                         })
                         .sort_values("Data")
                     )
@@ -956,13 +1340,13 @@ def main():
                         textposition="outside",
                     ))
                     metricas_figura.add_trace(go.Bar(
-                        name="Baseline (último mês)",
+                        name="Sazonal manual (mesmo mês do ano anterior)",
                         x=["MAE ↓", "RMSE ↓"],
-                        y=[rf["baseline_mae"], rf["baseline_rmse"]],
+                        y=[rf["manual_mae"], rf["manual_rmse"]],
                         marker_color="#bbbbbb",
                         text=[
-                            f"{rf['baseline_mae']:.2f}",
-                            f"{rf['baseline_rmse']:.2f}",
+                            f"{rf['manual_mae']:.2f}",
+                            f"{rf['manual_rmse']:.2f}",
                         ],
                         textposition="outside",
                     ))
@@ -984,8 +1368,8 @@ def main():
                         ("Random Forest", "Random Forest", "#777777"),
                         ("FastTree", "FastTree", "#444444"),
                         (
-                            "Baseline (último mês)",
-                            "Baseline",
+                            "Sazonal manual (mesmo mês do ano anterior)",
+                            "Sazonal_Manual",
                             "#bbbbbb",
                         ),
                     ):
@@ -998,10 +1382,10 @@ def main():
                             textposition="outside",
                         ))
                     totais_figura.update_layout(
-                        title="Consumo real e previsto por mês (agregado)",
+                        title="Consumo real e previsto por mês (soma de materiais e setores)",
                         barmode="group",
                         xaxis_title="Mês",
-                        yaxis_title="Unidades",
+                        yaxis_title="Unidades consumidas (soma mensal)",
                         legend_title="Série",
                         margin=dict(t=55, b=35),
                         template="plotly_white",
@@ -1024,7 +1408,7 @@ def main():
                         )
 
                     if not modo_captura:
-                        totais_colunas = st.columns(3)
+                        totais_colunas = st.columns(4)
                         totais_colunas[0].metric("Consumo real", f"{total_real:,.0f} un.")
                         totais_colunas[1].metric(
                             "Previsto · Random Forest",
@@ -1035,6 +1419,11 @@ def main():
                             "Previsto · FastTree",
                             f"{total_ft:,.0f} un.",
                             delta=f"{total_ft - total_real:+,.0f} un. vs real",
+                        )
+                        totais_colunas[3].metric(
+                            "Previsto · Sazonal manual",
+                            f"{rf['manual_total_previsto']:,.0f} un.",
+                            delta=f"{rf['manual_total_previsto'] - total_real:+,.0f} un. vs real",
                         )
 
                     with st.expander("Desempenho computacional desta execução"):

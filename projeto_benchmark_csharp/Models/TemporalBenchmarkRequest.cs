@@ -4,7 +4,7 @@ public sealed class TemporalBenchmarkRequest
 {
     public List<TemporalBenchmarkObservation> Historico { get; set; } = [];
     public DateTime Corte { get; set; }
-    public int Horizonte { get; set; } = 3;
+    public int Horizonte { get; set; } = 12;
     public int Arvores { get; set; } = 100;
     public int Folhas { get; set; } = 20;
     public int MinLeaf { get; set; } = 5;

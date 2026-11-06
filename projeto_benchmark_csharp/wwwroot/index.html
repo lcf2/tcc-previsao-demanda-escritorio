@@ -92,8 +92,8 @@
                 <input id="arquivoXlsx" class="form-control form-control-sm bg-dark text-light border-secondary mb-2"
                        type="file" accept=".xlsx">
                 <button id="btnImportar" class="btn btn-outline-success btn-sm w-100">Carregar dados do Excel</button>
-                <small class="text-muted d-block mt-2">Usa a MB51 detalhada. Planilha9 serve para conferência e não é somada novamente.</small>
-                <small class="text-warning d-block mt-1">Todos os movimentos são somados por mês; o tipo de movimento ainda não é classificado. Valide a regra de consumo antes de interpretar os resultados.</small>
+                <small id="txtImportHelp" class="text-muted d-block mt-2">A planilha será organizada por material e mês.</small>
+                <small id="txtMovementHelp" class="text-warning d-block mt-1">Confira a interpretação da quantidade antes de usar os resultados.</small>
                 <small id="txtUploadStatus" class="text-muted d-block mt-2" role="status"></small>
             </div>
             <div class="small text-info mb-3" id="txtOrigemDados">Origem: --</div>
@@ -169,14 +169,14 @@
                     <div class="card card-metric p-3">
                         <span class="metric-label">🎯 MAE FastTree (C#)</span>
                         <div class="metric-value" id="mMae">--</div>
-                        <small class="text-muted">Último consumo observado: <b id="mMaeBase">--</b></small>
+                        <small class="text-muted">Sazonal manual (MAE): <b id="mMaeManual">--</b></small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
                     <div class="card card-metric p-3">
                         <span class="metric-label">📈 Ganho de Precisão</span>
                         <div class="metric-value text-info" id="mGanho">--</div>
-                        <small class="text-muted">Versus último consumo observado</small>
+                        <small class="text-muted">Versus mesmo mês do ano anterior</small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
@@ -201,7 +201,7 @@
                     <div class="card card-metric p-3">
                         <span class="metric-label">📐 RMSE FastTree (C#)</span>
                         <div class="metric-value text-success" id="mRmse">--</div>
-                        <small class="text-muted">Último consumo observado: <b id="mRmseBase">--</b></small>
+                        <small class="text-muted">Sazonal manual (RMSE): <b id="mRmseManual">--</b></small>
                     </div>
                 </div>
                 <div class="col-sm-6 col-xl-3">
@@ -351,9 +351,25 @@ async function atualizarMeta() {
     document.getElementById('txtColabs').textContent = meta.colaboradores ?? meta.Colaboradores;
     document.getElementById('txtPcds').textContent   = meta.totalPcds ?? meta.TotalPcds;
     const origem = meta.origem ?? meta.Origem;
+    const origemExcelTabular = origem === 'Real - tabela Excel';
+    const movimentosClassificados =
+        meta.movimentosSapClassificados ?? meta.MovimentosSapClassificados ?? false;
     document.getElementById('txtOrigemDados').textContent =
         'Origem: ' + origem +
         ((meta.dadosReais ?? meta.DadosReais) ? ' | Sem dados de RH/setor' : '');
+    document.getElementById('txtImportHelp').textContent = origemExcelTabular
+        ? 'Tabela Excel agrupada por material e mês; quantidades repetidas são somadas.'
+        : 'Usa a MB51 detalhada. Planilha9 serve apenas para conferência e não é somada novamente.';
+    document.getElementById('txtMovementHelp').textContent =
+        !(meta.dadosReais ?? meta.DadosReais)
+        ? 'Base sintética: não há classificação de movimentos SAP.'
+        : origemExcelTabular
+        ? (movimentosClassificados
+            ? 'SAP: 201/261 tratados como consumo; 202/262 como estorno, compensados no total mensal.'
+            : 'Sem tipo de movimento identificado: a regra de quantidade da planilha não separa estornos.')
+        : (movimentosClassificados
+            ? 'SAP: 201/261 tratados como consumo; 202/262 como estorno, compensados no total mensal.'
+            : 'Tipo de movimento não identificado; valide a regra de consumo antes de interpretar os resultados.');
 }
 
 atualizarMeta().then(carregarDashboard).catch(error => {
@@ -374,19 +390,30 @@ document.getElementById('btnImportar').addEventListener('click', async () => {
     form.append('arquivo', input.files[0]);
     const button = document.getElementById('btnImportar');
     button.disabled = true;
-    status.textContent = 'Importando movimentações e conferindo o resumo...';
+    status.textContent = 'Importando e organizando a planilha...';
     try {
         const response = await fetch('/api/upload', { method: 'POST', body: form });
         const result = await response.json();
         if (!response.ok) throw new Error(result.erro ?? 'Falha ao importar o arquivo.');
-        const divergencias = result.divergenciasComPlanilha9 ?? result.DivergenciasComPlanilha9;
-        const conferidos = result.agrupamentosConferidos ?? result.AgrupamentosConferidos;
-        status.textContent =
-            `${result.mensagem} ${result.movimentacoes ?? result.Movimentacoes} movimentações, ` +
-            `${result.materiais} materiais, ${result.inicio} a ${result.fim}. ` +
-            (conferidos > 0
-                ? `Conferência Planilha9: ${conferidos} grupos, ${divergencias} divergências.`
-                : 'Não foi possível conferir com Planilha9.');
+        if ((result.abaDeOrigem ?? result.AbaDeOrigem) === 'MB51') {
+            const divergencias = result.divergenciasComPlanilha9 ?? result.DivergenciasComPlanilha9;
+            const conferidos = result.agrupamentosConferidos ?? result.AgrupamentosConferidos;
+            status.textContent =
+                `${result.mensagem} ${result.movimentacoes ?? result.Movimentacoes} movimentações, ` +
+                `${result.materiais} materiais, ${result.inicio} a ${result.fim}. ` +
+                (conferidos > 0
+                    ? `Conferência Planilha9: ${conferidos} grupos, ${divergencias} divergências.`
+                    : 'Não foi possível conferir com Planilha9.');
+        } else {
+            const movimentosClassificados =
+                result.movimentosSapClassificados ?? result.MovimentosSapClassificados ?? false;
+            status.textContent =
+                `Planilha organizada: ${result.registros} registros mensais, ` +
+                `${result.materiais} materiais, ${result.inicio} a ${result.fim}. ` +
+                (movimentosClassificados
+                    ? 'Movimentos SAP 201/261 como consumo e 202/262 como estornos.'
+                    : 'Quantidades somadas em valor absoluto.');
+        }
         await atualizarMeta();
         await carregarDashboard();
     } catch (error) {
@@ -428,7 +455,7 @@ async function carregarDashboard() {
         // ASP.NET Core Minimal API serializa em camelCase por padrão
         const c = data.cards ?? data.Cards; // suporte a ambos os formatos
         document.getElementById('mMae').textContent = (c.mae ?? c.Mae).toFixed(3);
-        document.getElementById('mMaeBase').textContent = (c.maeBaseline ?? c.MaeBaseline).toFixed(3);
+        document.getElementById('mMaeManual').textContent = (c.maeSazonalManual ?? c.MaeSazonalManual).toFixed(3);
         document.getElementById('mGanho').textContent = (c.ganhoPrecisao ?? c.GanhoPrecisao).toFixed(1) + ' %';
         document.getElementById('mTempo').textContent = (c.tempoTreinoMs ?? c.TempoTreinoMs) + ' ms';
         document.getElementById('mInf').textContent = (c.tempoInferenciaMs ?? c.TempoInferenciaMs);
@@ -439,7 +466,7 @@ async function carregarDashboard() {
         document.getElementById('mPrev').textContent = (c.totalPrevisoes ?? c.TotalPrevisoes);
         // RMSE cards
         document.getElementById('mRmse').textContent = (c.rmse ?? c.Rmse).toFixed(3);
-        document.getElementById('mRmseBase').textContent = (c.rmseBaseline ?? c.RmseBaseline).toFixed(3);
+        document.getElementById('mRmseManual').textContent = (c.rmseSazonalManual ?? c.RmseSazonalManual).toFixed(3);
         // Registros / Divisao cards
         const linhasTreino = c.linhasTreino ?? c.LinhasTreino;
         const linhasTeste  = c.linhasTeste  ?? c.LinhasTeste;
@@ -455,7 +482,7 @@ async function carregarDashboard() {
         const grafico = data.grafico ?? data.Grafico;
         const hist = grafico.historico ?? grafico.Historico;
         const prev = grafico.previsao  ?? grafico.Previsao;
-        const baseline = grafico.baseline ?? grafico.Baseline ?? [];
+        const sazonalManual = grafico.sazonalManual ?? grafico.SazonalManual ?? [];
         const todosLabels = [...new Set([
                 ...hist.map(r => r.data ?? r.Data),
                 ...prev.map(r => r.data ?? r.Data)
@@ -471,8 +498,8 @@ async function carregarDashboard() {
         const espData  = todosLabels.map(l => {
             const r = prev.find(p=>(p.data??p.Data)===l); return r ? (r.especial??r.Especial) : null;
         });
-        const baseData = todosLabels.map(l => {
-            const r = baseline.find(b => (b.data??b.Data) === l);
+        const sazonalManualData = todosLabels.map(l => {
+            const r = sazonalManual.find(b => (b.data??b.Data) === l);
             return r ? (r.quantidade??r.Quantidade) : null;
         });
 
@@ -488,7 +515,7 @@ async function carregarDashboard() {
                     { label:'FastTree (IA) C#', data:prevData, borderColor:'#666666',
                       backgroundColor:'rgba(102,102,102,.10)', borderDash:[6,4], tension:.3,
                       borderWidth:3, pointRadius:5, pointStyle:'rectRot', pointBackgroundColor:'#666666' },
-                    { label:'Baseline (último consumo observado)', data:baseData, borderColor:'#999999',
+                    { label:'Sazonal manual (mesmo mês do ano anterior; zero sem registro)', data:sazonalManualData, borderColor:'#999999',
                       backgroundColor:'rgba(153,153,153,.08)', borderDash:[3,3], tension:.25,
                       borderWidth:2, pointRadius:3, pointStyle:'triangle', pointBackgroundColor:'#999999', spanGaps:false },
                     { label:'Itens Especiais Inclusivos', data:espData, type:'bar',
